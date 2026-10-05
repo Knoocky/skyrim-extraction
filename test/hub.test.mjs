@@ -73,7 +73,7 @@ test('v4 migration preserves oversized legacy stash instead of deleting or trapp
   try {
     assert.deepEqual(c.storageState('legacy'), { used: 120, limit: 120 });
     assert.equal(c.snapshot('legacy').stash.length, 120); assert.equal(c.market().cycle, 7);
-    assert.equal(c.market().stock[0].quantity, 3); assert.equal(c.projection().revision, 11);
+    assert.equal(c.market().stock.find(s => s.offerId === "potion").quantity, 3); assert.equal(c.projection().revision, 11);
     deny('STORAGE_FULL', () => c.buy('buy', 'legacy', 'potion', 1));
     c.upgrade('upgrade', 'legacy', 'storage', 0);
     assert.deepEqual(c.storageState('legacy'), { used: 120, limit: 170 });

@@ -1,0 +1,17 @@
+{
+  "note": "Informational template; serve.ts reads the EXTRACTION_* environment variables documented in G1_HANDOFF.md.",
+  "EXTRACTION_BIND": "127.0.0.1",
+  "EXTRACTION_PORT": 8787,
+  "EXTRACTION_DB": "/srv/skyrim-extraction-data/core.sqlite",
+  "EXTRACTION_TOKEN_FILE": "/srv/skyrim-extraction-data/server-token.key",
+  "adapter": {
+    "coreUrl": "http://127.0.0.1:8787",
+    "leaseHeartbeatMs": 5000,
+    "leaseDurationMs": 15000,
+    "maxPending": 64,
+    "bindings": "bindings.local.json",
+    "verifiedLoginProvider": null,
+    "worldObservationProvider": null,
+    "interactionFreezeProvider": null
+  }
+}

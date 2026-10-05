@@ -1,0 +1,132 @@
+{
+  "format": 1,
+  "runtime": "1.6.1170",
+  "contentHash": "39ed5027e85a92e4ba08f3ed1edb6940e0fa5fc75651ea8ef1bdffff79345254",
+  "plugins": [],
+  "items": {
+    "steel_sword": null,
+    "steel_dagger": null,
+    "iron_axe": null,
+    "steel_axe": null,
+    "iron_mace": null,
+    "steel_mace": null,
+    "long_bow": null,
+    "dwarven_bow": null,
+    "elven_sword": null,
+    "dwarven_sword": null,
+    "steel_ingot": null,
+    "corundum_ingot": null,
+    "silver_ingot": null,
+    "gold_ingot": null,
+    "moonstone_ingot": null,
+    "dwarven_ingot": null,
+    "leather_strips": null,
+    "wolf_pelt": null,
+    "bear_pelt": null,
+    "deer_hide": null,
+    "blue_flower": null,
+    "red_flower": null,
+    "purple_flower": null,
+    "wheat": null,
+    "lavender": null,
+    "salt": null,
+    "garlic": null,
+    "mushroom": null,
+    "snowberry": null,
+    "frost_salts": null,
+    "stamina_potion": null,
+    "magicka_potion": null,
+    "strong_healing_potion": null,
+    "resist_frost_potion": null,
+    "resist_fire_potion": null,
+    "vegetable_soup": null,
+    "venison_stew": null,
+    "bread": null,
+    "cheese": null,
+    "apple": null,
+    "gold_ring": null,
+    "silver_necklace": null,
+    "gold_necklace": null,
+    "garnet": null,
+    "amethyst": null,
+    "ruby": null,
+    "sapphire": null,
+    "emerald": null,
+    "diamond": null,
+    "ancient_coin": null,
+    "iron_sword": null,
+    "hunting_bow": null,
+    "healing_potion": null,
+    "silver_ring": null,
+    "dwemer_relic": null,
+    "mountain_herb": null,
+    "iron_ingot": null,
+    "leather": null,
+    "raw_meat": null,
+    "food_ration": null
+  },
+  "areas": {
+    "ruins": {
+      "cell": null,
+      "containerMarker": null
+    },
+    "mine": {
+      "cell": null,
+      "containerMarker": null
+    },
+    "vault": {
+      "cell": null,
+      "containerMarker": null
+    },
+    "tower": {
+      "cell": null,
+      "containerMarker": null
+    },
+    "crypt": {
+      "cell": null,
+      "containerMarker": null
+    },
+    "beacon": {
+      "cell": null,
+      "containerMarker": null
+    }
+  },
+  "targets": {
+    "ruins_gate": null,
+    "bandit": null,
+    "field_medic": null,
+    "ruin_guardian": null,
+    "watch_point": null,
+    "abandoned_mine": null,
+    "mine_chief": null,
+    "surveyor": null,
+    "sealed_vault": null,
+    "old_tower": null,
+    "river_crossing": null,
+    "caravaneer": null,
+    "hill_crypt": null,
+    "crypt_guard": null,
+    "beacon_summit": null,
+    "beacon_keeper": null,
+    "wolf": null,
+    "bear": null
+  },
+  "exits": {
+    "north_gate": {
+      "cell": null,
+      "position": null
+    },
+    "river_boat": {
+      "cell": null,
+      "position": null
+    },
+    "night_tunnel": {
+      "cell": null,
+      "position": null
+    },
+    "beacon_route": {
+      "cell": null,
+      "position": null
+    }
+  }
+}

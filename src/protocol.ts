@@ -1,4 +1,6 @@
-import { DomainError, ExtractionCore } from './core.mjs';
+import { WorldModel } from './world-model.ts';
+import type { ExtractionCore } from './core.mjs';
+import { DomainError } from './domain-error.mjs';
 
 export const PROTOCOL_VERSION = 1;
 export type ObjectValue = Record<string, unknown>;
@@ -28,7 +30,8 @@ export interface Command {
   // A decision made by the authenticated SERVER adapter, never copied from a player packet.
   worldApproved?: boolean;
 }
-const fields: Record<string, string[]> = {
+export const fields: Record<string, string[]> = {
+  configureRegion: ['worldId'], advanceWorld: ['worldId','minute'], observeArea: ['worldId','playerId','expeditionId','areaId','sequence','transitionTo'], resetArea: ['worldId','areaId','cycle'],
   acceptMission: ['definitionId'], claimMission: ['instanceId'], advanceMissionCycle: ['cycle'],
   recordMissionEvent: ['eventId', 'worldId', 'kind', 'target', 'recipients'],
   recoveryKit: [], craft: ['recipeId', 'batches'], restockMarket: ['cycle'],
@@ -44,7 +47,7 @@ const fields: Record<string, string[]> = {
   acceptContract: ['contractId'], turnInContract: ['contractId', 'itemIds'],
   splitStack: ['itemId', 'quantity'], mergeStacks: ['sourceId', 'targetId']
 };
-const connected = new Set(['beginExpedition', 'pickup', 'consume', 'extract', 'splitStack', 'mergeStacks', 'acceptMission', 'claimMission', 'recoveryKit', 'craft', 'buy', 'sell', 'upgrade', 'learnSkill', 'acceptContract', 'turnInContract']);
+export const connected = new Set(['beginExpedition', 'pickup', 'consume', 'extract', 'splitStack', 'mergeStacks', 'acceptMission', 'claimMission', 'recoveryKit', 'craft', 'buy', 'sell', 'upgrade', 'learnSkill', 'acceptContract', 'turnInContract']);
 const needsApproval = new Set(['pickup', 'consume', 'extract', 'recordDeath', 'recordMissionEvent']);
 
 export function decodeCommand(raw: unknown): Command {
@@ -57,7 +60,7 @@ export function decodeCommand(raw: unknown): Command {
   keys(payload, fields[operation]);
   for (const name of fields[operation]) {
     if (name.endsWith('Id')) id(payload[name]);
-    if (['quantity', 'expectedLevel', 'expectedRank', 'batches', 'cycle'].includes(name)) integer(payload[name]);
+    if (['quantity', 'expectedLevel', 'expectedRank', 'batches', 'cycle', 'minute', 'sequence'].includes(name)) integer(payload[name]);
   }
   if (['beginExpedition', 'turnInContract'].includes(operation) && (!Array.isArray(payload.itemIds) || payload.itemIds.length > 100 || !payload.itemIds.every(x => { id(x); return true; }))) {
     throw new DomainError('INVALID_LOADOUT');
@@ -98,7 +101,14 @@ export function dispatch(core: ExtractionCore, command: Command): unknown {
         case 'mergeStacks': return core.mergeStacks(r, playerId, p.sourceId, p.targetId);
       }
     });
+    const world = new WorldModel(core);
     switch (op) {
+      case 'configureRegion': return world.configure(r, String(p.worldId));
+      case 'advanceWorld': return world.advance(r, String(p.worldId), Number(p.minute));
+      case 'observeArea':
+        if (p.transitionTo !== null) id(p.transitionTo);
+        return world.observe(r, String(p.worldId), String(p.playerId), String(p.expeditionId), String(p.areaId), Number(p.sequence), p.transitionTo as string | null);
+      case 'resetArea': return world.reset(r,String(p.worldId),String(p.areaId),Number(p.cycle));
       case 'advanceMissionCycle': return core.advanceMissionCycle(r, p.cycle);
       case 'recordMissionEvent':
         if (command.worldApproved !== true) throw new DomainError('MISSION_EVENT_NOT_AUTHORIZED');

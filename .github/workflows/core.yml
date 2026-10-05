@@ -9,7 +9,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -24,6 +24,14 @@ jobs:
       - run: npm run build
       - run: npm test
       - run: npm run demo
+      - run: npm run check:bindings -- config/bindings.example.json --template
+      - name: Independent scenarios and bounded service soak
+        if: runner.os == 'Linux'
+        run: |
+          npm run qa:extended -- 10000
+          node scripts/qa-service.ts 30
+      - name: Portable runtime package
+        run: npm run package -- core-0.8.0.sxe.gz
       - name: Install test browser
         if: runner.os == 'Linux'
         run: npx playwright install --with-deps chromium

@@ -1,6 +1,6 @@
 {
   "name": "skyrim-extraction-core",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -18,7 +18,11 @@
     "test:browser": "playwright test",
     "doctor": "node scripts/doctor.mjs",
     "health": "node scripts/health.ts",
-    "check:content": "node scripts/check-content.mjs"
+    "check:content": "node scripts/check-content.mjs",
+    "package": "node scripts/package-release.mjs",
+    "restore": "node scripts/restore.mjs",
+    "qa:extended": "node scripts/qa-extended.mjs",
+    "check:bindings": "node scripts/check-bindings.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
@@ -31,5 +35,6 @@
   "dependencies": {
     "react": "19.3.0",
     "react-dom": "19.3.0"
-  }
+  },
+  "license": "MIT"
 }

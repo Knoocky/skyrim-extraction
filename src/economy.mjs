@@ -1,7 +1,8 @@
 // Versioned, server-owned starter balance. No game FormIDs or client-provided prices.
+import { EXTRA_OFFERS } from './extra-offers.mjs';
 import { freeze } from './catalog.mjs';
 export const ECONOMY = freeze({
-  version: 3,
+  version: 4,
   offers: [
     { id: 'sword', trader: 'smith', template: 'iron_sword', buy: 100, sell: 25, stock: 20 },
     { id: 'bow', trader: 'smith', template: 'hunting_bow', buy: 100, sell: 25, stock: 20 },
@@ -12,7 +13,8 @@ export const ECONOMY = freeze({
     { id: 'ingot', trader: 'smith', template: 'iron_ingot', buy: 20, sell: 5, stock: 100 },
     { id: 'leather', trader: 'smith', template: 'leather', buy: 15, sell: 4, stock: 100 },
     { id: 'meat', trader: 'apothecary', template: 'raw_meat', buy: 10, sell: 2, stock: 100 },
-    { id: 'ration', trader: 'apothecary', template: 'food_ration', buy: 15, sell: 3, stock: 100 }
+    { id: 'ration', trader: 'apothecary', template: 'food_ration', buy: 15, sell: 3, stock: 100 },
+    ...EXTRA_OFFERS
   ],
   contracts: [
     { id: 'supplies', name: 'Запас для лекаря', template: 'healing_potion', quantity: 3, gold: 80, xp: 100, requires: null, archive: 0 },
@@ -27,7 +29,7 @@ export const ECONOMY = freeze({
     { id: 'kitchen', name: 'Кухня', costs: [30, 60], description: 'Снижает плату за партию пайков на 1 золото за уровень.' },
     { id: 'scouting', name: 'Стол разведки', costs: [100, 200, 400], description: '+10% опыта за новые контракты за уровень.' }
   ],
-  skills: [{ id: 'bargaining', name: 'Переговоры', maxRank: 3, description: '+5% золота за новые контракты за ранг.' }]
+  skills: [{ id: 'fieldcraft', name: 'Полевые знания', maxRank: 3, description: '+1 опыт за единицу впервые вынесенной добычи за ранг.' }, { id: 'scholarship', name: 'Учёность', maxRank: 3, description: '+5% опыта за новые задания за ранг.' }, { id: 'bargaining', name: 'Переговоры', maxRank: 3, description: '+5% золота за новые контракты за ранг.' }]
 });
 export const ECONOMY_SCHEMA = `
 CREATE TABLE progression (

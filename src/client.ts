@@ -6,12 +6,14 @@ export interface MissionTerms { id: string; name: string; objectives: { kind: st
 export interface Mission { id: string; definitionId: string; cycle: number; status: 'ACCEPTED' | 'COMPLETED'; terms: MissionTerms; progress: { confirmed: number; pending: number }[] }
 export interface Progression {
   missions: Mission[]; missionCycle: number;
+  fieldcraft: number; scholarship: number; reputation: number; finaleCompleted: boolean;
   gold: number; xp: number; level: number; skillPoints: number;
   bargaining: number; workshop: number; archive: number;
   storage: number; alchemy: number; kitchen: number; scouting: number; capacity: { used: number; limit: number };
   contracts: { id: string; status: 'ACCEPTED' | 'COMPLETED'; terms: ContractTerms }[];
 }
 export interface PlayerState {
+  reports?: { expeditionId: string; outcome: string; items: Item[]; xp: number }[];
   progression: Progression;
   playerId: string;
   stash: Item[];
@@ -31,6 +33,7 @@ export class RemoteError extends Error {
   code: string;
   status: number;
   commandRejected = false;
+  uncertain = false;
   constructor(code: string, status = 0) { super(code); this.code = code; this.status = status; }
 }
 export class CoreClient {

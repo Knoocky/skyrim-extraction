@@ -12,9 +12,17 @@ export class ProjectionBridge {
   client: CoreClient;
   port: WorldProjectionPort;
   #tail: Promise<unknown> = Promise.resolve();
-  constructor(client: CoreClient, port: WorldProjectionPort) { this.client = client; this.port = port; }
+  #pending = 0;
+  readonly maxPending: number;
+  constructor(client: CoreClient, port: WorldProjectionPort, maxPending = 64) {
+    if (!Number.isInteger(maxPending) || maxPending < 1 || maxPending > 1024) throw new Error('INVALID_QUEUE_LIMIT');
+    this.client = client; this.port = port; this.maxPending = maxPending;
+  }
+  get pending() { return this.#pending; }
   #serialize<T>(work: () => Promise<T>): Promise<T> {
-    const result = this.#tail.then(work);
+    if (this.#pending >= this.maxPending) return Promise.reject(new RemoteError('QUEUE_FULL', 429));
+    this.#pending++;
+    const result = this.#tail.then(work).finally(() => { this.#pending--; });
     this.#tail = result.catch(() => undefined);
     return result;
   }
@@ -37,7 +45,7 @@ export class ProjectionBridge {
       await this.port.freeze();
       await this.#synchronize();
       const result = await this.client.command<T>(command).catch(error => {
-        if (error instanceof RemoteError && error.status >= 400 && error.status < 500) error.commandRejected = true;
+        if (error instanceof RemoteError && error.status >= 400 && error.status < 500 && !error.uncertain) error.commandRejected = true;
         throw error;
       });
       await this.#synchronize();

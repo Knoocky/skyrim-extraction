@@ -1,3 +1,5 @@
+import { validateReleaseContent } from './content-validation.mjs';
+import { extensionSchema } from './extension-schema.mjs';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { SESSION_SCHEMA } from './session-schema.mjs';
@@ -6,11 +8,10 @@ import { ITEMS, RECIPES, validateContent } from './catalog.mjs';
 import { MISSIONS, MISSION_SCHEMA } from './missions.mjs';
 import { HUB_SCHEMA } from './hub-schema.mjs';
 import { craftingSchema } from './crafting-schema.mjs';
-validateContent(ECONOMY);
+validateReleaseContent();
 
-export class DomainError extends Error {
-  constructor(code) { super(code); this.name = 'DomainError'; this.code = code; }
-}
+import { DomainError } from './domain-error.mjs';
+export { DomainError } from './domain-error.mjs';
 const requireThat = (condition, code) => { if (!condition) throw new DomainError(code); };
 const validId = value => typeof value === 'string' && value.length > 0 && value.length <= 200;
 const canonical = value => {
@@ -44,7 +45,7 @@ export class ExtractionCore {
         BEGIN IMMEDIATE;
       `);
       const version = this.row('PRAGMA user_version').user_version;
-      requireThat(version <= 6, 'UNSUPPORTED_SCHEMA');
+      requireThat(version <= 7, 'UNSUPPORTED_SCHEMA');
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS players (id TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS raids (
@@ -113,6 +114,10 @@ export class ExtractionCore {
       }
       if (version < 6) {
         this.db.exec(MISSION_SCHEMA);
+      }
+      if (version < 7) {
+        this.db.exec(extensionSchema());
+        for (const offer of ECONOMY.offers) this.run('INSERT OR IGNORE INTO market_stock VALUES (?,?)', offer.id, offer.stock);
         this.queueProjection();
       }
       requireThat(this.rows('PRAGMA foreign_key_check').length === 0, 'INVALID_DATABASE_REFERENCES');
@@ -144,7 +149,7 @@ export class ExtractionCore {
   readSnapshot(playerId) {
     const stash = this.itemsAt(this.stash(playerId));
     const active = this.row("SELECT * FROM participants WHERE player_id = ? AND status = 'ACTIVE'", playerId);
-    return { playerId, stash, progression: this.progression(playerId), active: active ? {
+    return { playerId, stash, reports: this.rows('SELECT expedition_id AS expeditionId,outcome,items,xp FROM expedition_reports WHERE player_id=? ORDER BY rowid DESC LIMIT 10', playerId).map(r => ({ ...r, items: JSON.parse(r.items) })), progression: this.progression(playerId), active: active ? {
       raidId: active.raid_id, worldId: active.raid_id,
       participantId: active.id, expeditionId: active.id,
       items: this.itemsAt(this.row('SELECT id FROM locations WHERE participant_id = ?', active.id).id)
@@ -241,11 +246,26 @@ export class ExtractionCore {
         requireThat(cached.command === command, 'REQUEST_ID_REUSED');
         return JSON.parse(cached.result);
       }
+      const before = this.economicTotals();
       const result = execute();
       this.queueProjection();
+      const after = this.economicTotals();
+      this.run('INSERT INTO economy_audit(revision,actor,request_id,operation,gold_before,gold_after,units_before,units_after) VALUES (?,?,?,?,?,?,?,?)', this.projectionMetadata().revision,actor,requestId,operation,before.gold,after.gold,before.units,after.units);
       this.run('INSERT INTO receipts VALUES (?, ?, ?, ?)', actor, requestId, command, JSON.stringify(result));
       return result;
     });
+  }
+  economicTotals() {
+    return { gold: this.row('SELECT COALESCE(SUM(gold),0) AS n FROM progression').n, units: this.row('SELECT COALESCE(SUM(quantity),0) AS n FROM items').n };
+  }
+  // Receipts/events are never expired: deleting them would reopen arbitrary old request IDs.
+  diagnostics() {
+    const state = this.projectionMetadata();
+    return { revision: state.revision, acknowledged: this.row('SELECT acknowledged FROM projection_state WHERE id=1').acknowledged,
+      players: this.row('SELECT COUNT(*) AS n FROM players').n, receipts: this.row('SELECT COUNT(*) AS n FROM receipts').n,
+      auditEntries: this.row('SELECT COUNT(*) AS n FROM economy_audit').n,
+      projectionBytes: this.row('SELECT LENGTH(CAST(payload AS BLOB)) AS n FROM projection_outbox WHERE id=1')?.n ?? 0,
+      databaseBytes: this.row('PRAGMA page_count').page_count * this.row('PRAGMA page_size').page_size };
   }
   // Provisioning only. Authenticated player identities must come from the adapter.
   registerPlayer(requestId, playerId) {
@@ -353,6 +373,7 @@ export class ExtractionCore {
       const stashId = this.stash(playerId);
       requireThat(this.row("SELECT id FROM raids WHERE id = ? AND status = 'OPEN'", raidId), 'RAID_NOT_OPEN');
       requireThat(!this.row("SELECT id FROM participants WHERE player_id = ? AND status = 'ACTIVE'", playerId), 'ALREADY_ACTIVE');
+      requireThat(this.row("SELECT COUNT(*) AS n FROM participants WHERE raid_id=? AND status='ACTIVE'",raidId).n < 4, 'WORLD_FULL');
       if (!allowReturn) requireThat(!this.row('SELECT id FROM participants WHERE player_id = ? AND raid_id = ?', playerId, raidId), 'ALREADY_PARTICIPATED');
       for (const itemId of itemIds) {
         requireThat(this.row('SELECT id FROM items WHERE id = ? AND location_id = ?', itemId, stashId), 'ITEM_NOT_IN_STASH');
@@ -360,7 +381,10 @@ export class ExtractionCore {
       const participantId = randomUUID(), inventoryId = randomUUID();
       this.run("INSERT INTO participants VALUES (?, ?, ?, 'ACTIVE')", participantId, playerId, raidId);
       this.run("INSERT INTO locations VALUES (?, 'INVENTORY', ?, ?, ?)", inventoryId, playerId, raidId, participantId);
-      for (const itemId of itemIds) this.run('UPDATE items SET location_id = ? WHERE id = ?', inventoryId, itemId);
+      for (const itemId of itemIds) {
+        this.run('INSERT INTO expedition_loadout VALUES (?,?)',participantId,itemId);
+        this.run('UPDATE items SET location_id = ? WHERE id = ?', inventoryId, itemId);
+      }
       return { participantId, expeditionId: participantId, raidId, worldId: raidId, inventoryId, items: this.itemsAt(inventoryId) };
     });
   }
@@ -381,6 +405,7 @@ export class ExtractionCore {
     requireThat([playerId, raidId].every(validId), 'INVALID_ID');
     return this.command('system', requestId, 'recordDeath', { playerId, raidId, ...(expeditionId === undefined ? {} : { expeditionId }) }, () => {
       const participant = this.active(playerId, raidId, expeditionId), containerId = randomUUID();
+      this.run('INSERT INTO expedition_reports VALUES (?,?,?,?,0)',participant.id,playerId,'DEAD',JSON.stringify(this.itemsAt(participant.inventory_id)));
       this.run("INSERT INTO locations VALUES (?, 'CONTAINER', NULL, ?, NULL)", containerId, raidId);
       this.run('DELETE FROM items WHERE location_id=? AND recovery_owner IS NOT NULL', participant.inventory_id);
       this.run('UPDATE items SET location_id = ? WHERE location_id = ?', containerId, participant.inventory_id);
@@ -396,7 +421,9 @@ export class ExtractionCore {
       requireThat(this.authority.canExtract?.({ playerId, raidId, exitId }) === true, 'EXTRACTION_NOT_AUTHORIZED');
       const items = this.itemsAt(participant.inventory_id);
       const fresh = this.row(`SELECT COALESCE(SUM(i.quantity),0) AS quantity FROM items i JOIN loot_provenance p ON p.item_id=i.id WHERE i.location_id=? AND p.extracted=0`, participant.inventory_id).quantity;
-      this.run('UPDATE progression SET xp=xp+? WHERE player_id=?', fresh * 10, playerId);
+      const xp = fresh * (10 + this.progression(playerId).fieldcraft);
+      this.run('UPDATE progression SET xp=xp+? WHERE player_id=?', xp, playerId);
+      this.run('INSERT INTO expedition_reports VALUES (?,?,?,?,?)', participant.id,playerId,'EXTRACTED',JSON.stringify(items),xp);
       this.run('UPDATE loot_provenance SET extracted=1 WHERE item_id IN (SELECT id FROM items WHERE location_id=?)', participant.inventory_id);
       this.run('UPDATE items SET location_id = ? WHERE location_id = ?', this.stash(playerId), participant.inventory_id);
       this.commitMissionProgress(participant.id);
@@ -409,6 +436,7 @@ export class ExtractionCore {
     requireThat(validId(raidId), 'INVALID_ID');
     return this.command('system', requestId, 'closeRaid', { raidId }, () => {
       requireThat(this.row("SELECT id FROM raids WHERE id = ? AND status = 'OPEN'", raidId), 'RAID_NOT_OPEN');
+      for (const participant of this.rows("SELECT p.id,p.player_id,l.id AS inventory_id FROM participants p JOIN locations l ON l.participant_id=p.id WHERE p.raid_id=? AND p.status='ACTIVE'", raidId)) this.run('INSERT INTO expedition_reports VALUES (?,?,?,?,0)',participant.id,participant.player_id,'FORFEITED',JSON.stringify(this.itemsAt(participant.inventory_id)));
       const lost = this.run('DELETE FROM items WHERE location_id IN (SELECT id FROM locations WHERE raid_id = ?)', raidId).changes;
       this.run("UPDATE participants SET status = 'FORFEITED' WHERE raid_id = ? AND status = 'ACTIVE'", raidId);
       this.run('DELETE FROM mission_pending WHERE expedition_id IN (SELECT id FROM participants WHERE raid_id=?)', raidId);
@@ -416,10 +444,28 @@ export class ExtractionCore {
       return { raidId, status: 'CLOSED', lostItems: lost };
     });
   }
+  // Crash policy: return only surviving original loadout UUIDs still owned by that expedition.
+  // Loot is forfeited, spent/transferred/lost gear is never recreated. Old schema expeditions have no refundable loadout.
+  recoverWorld(requestId, worldId) {
+    requireThat(validId(worldId), 'INVALID_ID');
+    return this.command('system',requestId,'recoverWorld',{worldId},()=>{
+      requireThat(this.row("SELECT id FROM raids WHERE id=? AND status='OPEN'",worldId),'RAID_NOT_OPEN');
+      for (const p of this.rows("SELECT p.id,p.player_id,l.id AS inventory_id FROM participants p JOIN locations l ON l.participant_id=p.id WHERE p.raid_id=? AND p.status='ACTIVE'",worldId)) {
+        const returned=this.itemsAt(p.inventory_id).filter(i=>this.row('SELECT 1 FROM expedition_loadout WHERE expedition_id=? AND item_id=?',p.id,i.id));
+        for (const item of returned) this.run('UPDATE items SET location_id=? WHERE id=?',this.stash(p.player_id),item.id);
+        this.run('INSERT INTO expedition_reports VALUES (?,?,?,?,0)',p.id,p.player_id,'RECOVERED',JSON.stringify(returned));
+        this.run("UPDATE participants SET status='FORFEITED' WHERE id=?",p.id);
+      }
+      this.run('DELETE FROM mission_pending WHERE expedition_id IN (SELECT id FROM participants WHERE raid_id=?)',worldId);
+      const lost=this.run('DELETE FROM items WHERE location_id IN (SELECT id FROM locations WHERE raid_id=?)',worldId).changes;
+      this.run("UPDATE raids SET status='CLOSED' WHERE id=?",worldId);
+      return {worldId,status:'CLOSED',lostItems:lost};
+    });
+  }
   progression(playerId) {
-    const p = this.row('SELECT gold, xp, bargaining, workshop, archive, storage, alchemy, kitchen, scouting FROM progression WHERE player_id=?', playerId);
+    const p = this.row('SELECT gold, xp, bargaining, fieldcraft, scholarship, reputation, workshop, archive, storage, alchemy, kitchen, scouting FROM progression WHERE player_id=?', playerId);
     requireThat(p, 'PLAYER_NOT_FOUND');
-    return { ...p, missions: this.missions(playerId), missionCycle: this.row('SELECT cycle FROM mission_cycle WHERE id=1').cycle, capacity: this.storageState(playerId), level: 1 + Math.floor(p.xp / 100), skillPoints: Math.floor(p.xp / 100) - p.bargaining,
+    return { ...p, missions: this.missions(playerId), missionCycle: this.row('SELECT cycle FROM mission_cycle WHERE id=1').cycle, capacity: this.storageState(playerId), level: 1 + Math.floor(p.xp / 100), finaleCompleted: this.missions(playerId).some(m => m.definitionId === 'final_beacon' && m.status === 'COMPLETED'), skillPoints: Math.floor(p.xp / 100) - p.bargaining - p.fieldcraft - p.scholarship,
       contracts: this.rows('SELECT contract_id AS id, status, terms FROM player_contracts WHERE player_id=? ORDER BY contract_id', playerId)
         .map(c => ({ id: c.id, status: c.status, terms: JSON.parse(c.terms) })) };
   }
@@ -474,14 +520,14 @@ export class ExtractionCore {
     });
   }
   learnSkill(requestId, playerId, skillId, expectedRank) {
-    requireThat(skillId === 'bargaining' && Number.isSafeInteger(expectedRank), 'INVALID_SKILL');
+    requireThat(ECONOMY.skills.some(s => s.id === skillId) && Number.isSafeInteger(expectedRank), 'INVALID_SKILL');
     return this.command('player:' + playerId, requestId, 'learnSkill', { playerId, skillId, expectedRank }, () => {
       this.editableStash(playerId);
       const p = this.progression(playerId);
-      requireThat(p.bargaining === expectedRank, 'STALE_RANK');
-      requireThat(p.bargaining < 3 && p.skillPoints > 0, 'SKILL_UNAVAILABLE');
-      this.run('UPDATE progression SET bargaining=bargaining+1 WHERE player_id=?', playerId);
-      return { skillId, rank: p.bargaining + 1 };
+      requireThat(p[skillId] === expectedRank, 'STALE_RANK');
+      requireThat(p[skillId] < 3 && p.skillPoints > 0, 'SKILL_UNAVAILABLE');
+      this.run(`UPDATE progression SET ${skillId}=${skillId}+1 WHERE player_id=?`, playerId);
+      return { skillId, rank: p[skillId] + 1 };
     });
   }
   acceptContract(requestId, playerId, contractId) {
@@ -493,7 +539,7 @@ export class ExtractionCore {
       const p = this.progression(playerId);
       requireThat(!p.contracts.some(c => c.id === contractId), 'CONTRACT_ALREADY_ACCEPTED');
       requireThat(p.archive >= definition.archive && (!definition.requires || p.contracts.some(c => c.id === definition.requires && c.status === 'COMPLETED')), 'CONTRACT_LOCKED');
-      const terms = { ...definition, version: ECONOMY.version, gold: Math.floor(definition.gold * (100 + p.bargaining * 5) / 100), xp: Math.floor(definition.xp * (100 + p.scouting * 10) / 100) };
+      const terms = { ...definition, version: ECONOMY.version, gold: Math.floor(definition.gold * (100 + p.bargaining * 5) / 100), xp: Math.floor(definition.xp * (100 + p.scouting * 10 + p.scholarship * 5) / 100) };
       this.run("INSERT INTO player_contracts VALUES (?,?,'ACCEPTED',?)", playerId, contractId, JSON.stringify(terms));
       return { contractId, terms };
     });
@@ -545,7 +591,8 @@ export class ExtractionCore {
       requireThat(!history.some(m => m.definitionId === definitionId && (m.status === 'ACCEPTED' || !definition.repeatable || m.cycle === current)), 'MISSION_ALREADY_TAKEN');
       requireThat(!definition.requires || history.some(m => m.definitionId === definition.requires && m.status === 'COMPLETED'), 'MISSION_LOCKED');
       const p = this.progression(playerId), id = randomUUID();
-      const terms = { ...definition, version: 1, gold: Math.floor(definition.gold * (100 + p.bargaining * 5) / 100), xp: Math.floor(definition.xp * (100 + p.scouting * 10) / 100) };
+      requireThat(p.reputation >= (definition.requiresReputation ?? 0), 'MISSION_REPUTATION_REQUIRED');
+      const terms = { ...definition, reputation: definition.repeatable ? 1 : 10, version: 2, gold: Math.floor(definition.gold * (100 + p.bargaining * 5) / 100), xp: Math.floor(definition.xp * (100 + p.scouting * 10 + p.scholarship * 5) / 100) };
       this.run("INSERT INTO mission_instances VALUES (?,?,?,?,'ACCEPTED',?)", id, playerId, definitionId, definition.repeatable ? current : 0, JSON.stringify(terms));
       return { instanceId: id, terms };
     });
@@ -611,7 +658,7 @@ export class ExtractionCore {
         requireThat(left === 0, 'INSUFFICIENT_ITEMS');
       }
       this.run("UPDATE mission_instances SET status='COMPLETED' WHERE id=?", instanceId);
-      this.run('UPDATE progression SET gold=gold+?,xp=xp+? WHERE player_id=?', mission.terms.gold, mission.terms.xp, playerId);
+      this.run('UPDATE progression SET gold=gold+?,xp=xp+?,reputation=reputation+? WHERE player_id=?', mission.terms.gold, mission.terms.xp, mission.terms.reputation ?? 0, playerId);
       return { instanceId, gold: mission.terms.gold, xp: mission.terms.xp };
     });
   }
@@ -654,7 +701,7 @@ export class ExtractionCore {
       const stash = this.editableStash(playerId), recipe = RECIPES.find(r => r.id === recipeId);
       requireThat(recipe, 'UNKNOWN_RECIPE');
       const p = this.progression(playerId);
-      requireThat(p[recipe.module] >= recipe.level, 'RECIPE_LOCKED');
+      requireThat(p[recipe.module] >= recipe.level && (!recipe.requires || p.missions.some(m => m.definitionId === recipe.requires && m.status === 'COMPLETED')), 'RECIPE_LOCKED');
       const feeReduction = recipe.output.template === 'healing_potion' ? p.alchemy : recipe.output.template === 'food_ration' ? p.kitchen : 0;
       const cost = Math.max(0, recipe.gold - feeReduction) * batches;
       requireThat(p.gold >= cost, 'INSUFFICIENT_GOLD');

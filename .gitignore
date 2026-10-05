@@ -21,3 +21,5 @@ build/
 
 test-results/
 playwright-report/
+
+*.sxe.gz

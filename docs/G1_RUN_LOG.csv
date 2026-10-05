@@ -1,0 +1,10 @@
+run_id,build_commit,core_version,skyrim_runtime,skymp_commit,bindings_hash,case_id,steps,expected,actual,status,evidence_path
+,,,,,,G1-login,,Verified distinct identities,,NOT_RUN,
+,,,,,,G1-pickup-race,,One owner on both clients,,NOT_RUN,
+,,,,,,G1-pvp-death,,Authoritative damage and death,,NOT_RUN,
+,,,,,,G1-consume-veto,,No consumption or effect after veto,,NOT_RUN,
+,,,,,,G1-transition,,Both sides consistent and protected,,NOT_RUN,
+,,,,,,G1-disconnect,,Vulnerable body and stale session rejected,,NOT_RUN,
+,,,,,,G1-crash,,Frozen then reconciled without duplicate loot,,NOT_RUN,
+,,,,,,G1-backup-restore,,New database identity and fenced old sessions,,NOT_RUN,
+,,,,,,G1-cef,,Keyboard and gamepad usable,,NOT_RUN,

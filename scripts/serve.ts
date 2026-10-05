@@ -9,7 +9,7 @@ const port = Number(process.env.EXTRACTION_PORT ?? 8787);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid port');
 mkdirSync(dirname(filename), { recursive: true, mode: 0o700 });
 const core = new ExtractionCore(filename);
-const server = createCoreServer(core, token);
+const server = createCoreServer(core, token, { requireLease: true });
 server.listen(port, process.env.EXTRACTION_BIND ?? '127.0.0.1', () => console.log(`Extraction core listening on port ${port}`));
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => {
   server.close(() => core.close());

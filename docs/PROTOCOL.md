@@ -1,4 +1,4 @@
-# Протокол 1 / схема базы 6
+# Протокол 1 / схема базы 7
 
 ## Доверие
 
@@ -11,10 +11,10 @@ HTTP API — внутренний канал доверенного SkyMP-ада
 | Метод / путь | Назначение |
 |---|---|
 | GET /v1/health | Состояние сервиса |
-| POST /v1/command | Выполнение команды |
+| POST /v1/command | Только изолированная модель; в serve.ts запрещён |
 | POST /v1/snapshot | Снимок игрока по connectionId |
 | GET /v1/projection | Последнее полное серверное состояние |
-| POST /v1/ack | Подтверждение databaseId и revision |
+| POST /v1/ack | Только изолированная модель; в serve.ts запрещён |
 
 Форма команды: `{protocolVersion: 1, requestId, operation, payload, connectionId?, worldApproved?}`. Точные поля и ограничения — `src/protocol.ts`; неизвестные поля отклоняются.
 
@@ -45,3 +45,17 @@ SkyMpInventoryPort заменяет инвентари целиком и чит�
 Версия 0.6 добавляет progression.storage/alchemy/kitchen/scouting и capacity{used,limit}; операции upgrade/acceptContract сохраняют прежнюю форму.
 
 Версия 0.7: acceptMission/claimMission — подключённые операции; recordMissionEvent с worldApproved и advanceMissionCycle — системные. progression.missions содержит экземпляры, зафиксированные условия, confirmed/pending целей; progression.missionCycle — текущий цикл. Точные правила — MISSIONS.md.
+
+## Производственный контур 0.8
+
+GET /v1/manifest возвращает protocolVersion/schemaVersion/contentHash. POST /v1/adapter/handshake принимает requestId,holderId,manifest и выдаёт {epoch,token,expiresAt,sequence}; только внутреннему серверу. Несовпадение манифеста запрещает запуск. Новый lease FROZEN; другой держатель не может захватить ещё действующий lease. Повтор того же handshake до истечения возвращает прежний grant. После истечения/перезапуска ядра epoch меняется.
+
+POST /v1/adapter/renew принимает {epoch,token}; TTL 15 секунд, heartbeat каждые 5 секунд. Откат серверных часов запрещён. Потеря heartbeat в AdapterRuntime замораживает мир. POST /v1/adapter/reconcile принимает {lease:{epoch,token},databaseId,revision}; допускается только точная текущая ревизия после полного apply/readback. Это доверенное заявление адаптера, не доказательство клиентской синхронизации.
+
+POST /v1/adapter/command: {lease,sequence,command}. Sequence начинается с 1 и растёт без пропусков. Повтор того же события возвращает записанный результат; изменённый payload запрещён. Запись результата/sequence и экономика фиксируются одной транзакцией. Core requestId сохраняет идемпотентность и при новом epoch. FencedCoreClient удерживает неопределённый запрос до его сверки; другой запрос в этот момент не отправляется.
+
+POST /v1/adapter/recover: {lease,requestId,worldId}; только FROZEN. Закрывает мир, возвращает лишь исходное снаряжение, которое ещё находится у исходной активной экспедиции. Добыча теряется, потраченные/переданные предметы не создаются вновь. Экспедиции до схемы 7 не имеют доказанного loadout и не получают автоматического возврата. Повтор восстановления не создаёт вещей.
+
+Новые системные команды: configureRegion, advanceWorld, observeArea, resetArea. Точные поля — fields в src/protocol.ts. В мире максимум 4 активных участника. ResetArea требует текущий игровой день; неизвестные позиции и активные переходы защищают области. AdvanceWorld не ускоряет время больше чем на сутки за команду и запускает общий монотонный цикл торговли/миссий. Время присылает доверенный игровой сервер.
+
+IntentRouter принимает только {requestId,operation,payload} и соединение транспорта. Пользователь не задаёт playerId, connectionId или worldApproved. AuthenticationPort должен возвращать сессию, созданную после настоящей проверки login; это обязательная зависимость G1. Ключ API по-прежнему является системной привилегией, lease не заменяет аутентификацию.

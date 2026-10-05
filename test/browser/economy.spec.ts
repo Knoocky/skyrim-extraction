@@ -20,16 +20,16 @@ test('trade and ambiguous reply retry preserve one purchase; character switch sh
       await route.abort('failed');
     } else await route.continue();
   });
-  await traders.locator('li').filter({ hasText: 'Зелье лечения' }).getByRole('button', { name: 'Купить', exact: true }).click();
+  await traders.locator('li').filter({ has: page.getByText('Зелье лечения', { exact: true }) }).getByRole('button', { name: 'Купить', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Повторить запрос' })).toBeVisible();
-  await expect(page.getByRole('combobox')).toBeDisabled();
+  await expect(page.getByLabel('Персонаж')).toBeDisabled();
   await page.getByRole('button', { name: 'Повторить запрос' }).click();
   await expect(page.getByText('35 золота', { exact: true })).toBeVisible();
   const stash = page.locator('section').filter({ has: page.getByRole('heading', { name: /Личный схрон/ }) });
   await expect(stash.locator('li')).toHaveCount(1);
   await page.getByRole('button', { name: 'Принять', exact: true }).first().click();
   await expect(page.getByRole('button', { name: 'Сдать припасы' })).toBeDisabled();
-  await page.getByRole('combobox').selectOption('bob');
+  await page.getByLabel('Персонаж').selectOption('bob');
   await expect(page.getByText('0 золота', { exact: true })).toBeVisible();
   await expect(stash.locator('li')).toHaveCount(3);
   await page.screenshot({ path: 'test-results/economy-desktop.png', fullPage: true });
@@ -41,7 +41,7 @@ test('trade and ambiguous reply retry preserve one purchase; character switch sh
 
 test('materials can be crafted through UI and bankruptcy recovery cannot be sold', async ({ page, request }) => {
   await page.goto('/?demo=1');
-  await page.getByRole('combobox').selectOption('bob');
+  await page.getByLabel('Персонаж').selectOption('bob');
   await expect(page.getByText('0 золота', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: /Выйти в экспедицию/ }).click();
   const pickup = page.getByRole('button', { name: 'Забрать', exact: true });
@@ -72,7 +72,7 @@ test('materials can be crafted through UI and bankruptcy recovery cannot be sold
 
 test('demo mission event remains provisional until extraction and reward claim', async ({ page, request }) => {
   await page.goto('/?demo=1');
-  await page.getByRole('combobox').selectOption('bob');
+  await page.getByLabel('Персонаж').selectOption('bob');
   const before = await (await request.get('/api/state?player=bob')).json();
   const mission = page.locator('article').filter({ has: page.getByRole('heading', { name: 'Разведка руин', exact: true }) });
   await mission.getByRole('button', { name: 'Взять задание' }).click();
@@ -86,4 +86,42 @@ test('demo mission event remains provisional until extraction and reward claim',
   await expect(mission.getByText('Выполнен', { exact: true })).toBeVisible();
   const after = await (await request.get('/api/state?player=bob')).json();
   expect(after.player.progression.gold).toBe(before.player.progression.gold + 20);
+});
+
+test('keyboard search and a fresh character finish the full beacon chain', async ({page, request}) => {
+  await page.goto('/?demo=1');
+  await page.getByLabel('Персонаж').selectOption('cora');
+  const search=page.getByLabel('Поиск в убежище');
+  await search.focus(); await page.keyboard.type('zzzz');
+  await expect(page.locator('.crafting article')).toHaveCount(0);
+  await search.fill('');
+  const chain=['Разведка руин','Опасный патруль','Возвращение лекаря','Страж руин','Заброшенная шахта','Главарь шахты','Спасение картографа','Запечатанное хранилище','Детали маяка','Последний маяк'];
+  for(const [index,name] of chain.entries()) {
+    const mission=page.locator('article').filter({has:page.getByRole('heading',{name,exact:true})});
+    await mission.getByRole('button',{name:'Взять задание',exact:true}).click();
+    if(name!=='Детали маяка') {
+      await page.getByRole('button',{name:/Выйти в экспедицию/}).click();
+      if(index===0) {
+        const pickup=page.getByRole('button',{name:'Забрать',exact:true});
+        for(let count=await pickup.count();count>0;count--) {await pickup.first().click();await expect(pickup).toHaveCount(count-1);}
+      }
+      const event=mission.getByRole('button',{name:'Имитировать событие задания'});
+      // Wait for each confirmed response; a patrol needs two separate stable events.
+      for(let i=0;i<(name==='Опасный патруль'||name==='Последний маяк'?2:1);i++) {
+        await event.first().click();
+        await expect(page.getByRole('status').filter({hasText:'Состояние подтверждено'})).toBeVisible();
+      }
+      await page.getByRole('button',{name:'Имитировать выход',exact:true}).click();
+    }
+    await mission.getByRole('button',{name:'Получить награду',exact:true}).click();
+    await expect(mission.getByText('Выполнен',{exact:true})).toBeVisible();
+  }
+  await expect(page.getByText(/Маяк восстановлен/)).toBeVisible();
+  const state=await (await request.get('/api/state?player=cora')).json();
+  expect(state.player.progression.finaleCompleted).toBe(true);
+  expect(state.player.progression.reputation).toBe(100);
+  await page.getByLabel('Задания',{exact:true}).selectOption('completed');
+  await expect(page.getByRole('button',{name:'Взять задание',exact:true})).toHaveCount(0);
+  await page.setViewportSize({width:1280,height:800});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
 });
