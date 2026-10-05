@@ -32,9 +32,11 @@ test('trade and ambiguous reply retry preserve one purchase; character switch sh
   await page.getByRole('combobox', { name: 'Персонаж', exact: true }).selectOption('bob');
   await expect(page.getByText('0 золота', { exact: true })).toBeVisible();
   await expect(stash.locator('li')).toHaveCount(3);
+  await page.screenshot({ path: 'test-results/economy-desktop-viewport.png' });
   await page.screenshot({ path: 'test-results/economy-desktop.png', fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/economy-mobile-viewport.png' });
   await page.screenshot({ path: 'test-results/economy-mobile.png', fullPage: true });
   expect(errors).toEqual([]);
 });

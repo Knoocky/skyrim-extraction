@@ -6,6 +6,6 @@
 
 .crafting { margin-top:24px; padding:22px; border:1px solid #37423c; background:#202725; }
 .recipe-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:20px; }
-input[type="search"] { width: min(100%, 22rem); padding: .65rem; border: 1px solid #607080; border-radius: .3rem; background: #16232c; color: #f2f1e9; }
+input[type="search"] { display: block; height: auto; min-height: 2.5rem; margin-top: .4rem; font: inherit; width: min(100%, 22rem); padding: .65rem; border: 1px solid #607080; border-radius: .3rem; background: #16232c; color: #f2f1e9; }
 :focus-visible { outline: 3px solid #f0c46c; outline-offset: 3px; }
 .toolbar label { min-width: 0; max-width: 100%; }
