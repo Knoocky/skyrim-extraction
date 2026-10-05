@@ -155,13 +155,25 @@ export class ExtractionCore {
       items: this.itemsAt(this.row('SELECT id FROM locations WHERE participant_id = ?', active.id).id)
     } : null };
   }
+  worldStates() {
+    return this.rows('SELECT id,status FROM raids ORDER BY id').map(world => {
+      const saved=this.row('SELECT minute FROM world_clock WHERE world_id=?',world.id);
+      if(!saved)return world;
+      const minute=saved.minute, hour=Math.floor(minute%1440/60), night=hour>=20||hour<6;
+      const areas=this.rows('SELECT area_id AS id,container_id AS containerId,cycle FROM world_areas WHERE world_id=? ORDER BY area_id',world.id).map(area=>({
+        ...area, occupied:this.row(`SELECT COUNT(*) AS n FROM participants p LEFT JOIN area_occupancy o ON o.expedition_id=p.id
+        WHERE p.raid_id=? AND p.status='ACTIVE' AND (o.expedition_id IS NULL OR o.area_id=? OR o.transition_to=?)`,world.id,area.id,area.id).n
+      }));
+      return {...world,clock:{minute,day:Math.floor(minute/1440),hour,night,riskMultiplier:night?2:1},areas};
+    });
+  }
   queueProjection() {
     this.run('UPDATE projection_state SET revision = revision + 1 WHERE id = 1');
     const state = this.projectionMetadata();
     const payload = {
       protocolVersion: 1, ...state, market: this.market(),
       players: this.rows('SELECT id FROM players ORDER BY id').map(p => this.readSnapshot(p.id)),
-      worlds: this.rows('SELECT id, status FROM raids ORDER BY id'),
+      worlds: this.worldStates(),
       containers: this.rows("SELECT id, raid_id AS worldId FROM locations WHERE kind = 'CONTAINER' ORDER BY id")
         .map(container => ({ ...container, items: this.itemsAt(container.id) }))
     };

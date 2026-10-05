@@ -50,6 +50,9 @@ test('safe area reset protects unknown actors and both transition sides across r
  deny('AREA_OCCUPIED',()=>model.reset('reset-origin',w.raidId,'ruins',1));
  model.reset('reset-vault',w.raidId,'vault',1);
  f.reopen();model=new WorldModel(f.c);
+ const projected=f.c.projection().worlds.find(x=>x.id===w.raidId);assert.equal(projected.clock.minute,1440);assert.equal(projected.clock.night,true);
+ assert.equal(projected.areas.find(a=>a.id==='mine').occupied,1);assert.equal(projected.areas.find(a=>a.id==='ruins').occupied,1);
+ assert.equal(f.c.market().cycle,1);assert.equal(f.c.row('SELECT cycle FROM mission_cycle WHERE id=1').cycle,2);
  deny('STALE_OBSERVATION',()=>model.observe('old',w.raidId,'a',exp.expeditionId,'vault',1));
  deny('AREA_OCCUPIED',()=>model.reset('reset-restart',w.raidId,'mine',1));
  model.observe('arrive',w.raidId,'a',exp.expeditionId,'mine',2);

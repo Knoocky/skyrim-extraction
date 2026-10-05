@@ -26,7 +26,7 @@ export interface Projection {
   databaseId: string;
   revision: number;
   players: PlayerState[];
-  worlds: { id: string; status: 'OPEN' | 'CLOSED' }[];
+  worlds: { id: string; status: 'OPEN' | 'CLOSED'; clock?: { minute:number; day:number; hour:number; night:boolean; riskMultiplier:number }; areas?: { id:string; containerId:string; cycle:number; occupied:number }[] }[];
   containers: { id: string; worldId: string; items: Item[] }[];
 }
 export class RemoteError extends Error {
