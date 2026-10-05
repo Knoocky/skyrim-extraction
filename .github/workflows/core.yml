@@ -35,8 +35,10 @@ jobs:
       - name: Install test browser
         if: runner.os == 'Linux'
         run: npx playwright install --with-deps chromium
+      - name: Install test browser on Windows
+        if: runner.os == 'Windows'
+        run: npx playwright install chromium
       - name: Browser economy and retry test
-        if: runner.os == 'Linux'
         run: npm run test:browser
 
   container:
