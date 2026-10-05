@@ -1,0 +1,46 @@
+name: SkyMP native compile
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/skymp-native.yml'
+      - 'patches/**'
+permissions:
+  contents: read
+jobs:
+  compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      VCPKG_DISABLE_METRICS: '1'
+      VCPKG_MAX_CONCURRENCY: '2'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Checkout pinned SkyMP
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: skyrim-multiplayer/skymp
+          ref: 2849e676fe008925384b26f34476e382a30bd877
+          path: upstream
+          submodules: recursive
+          persist-credentials: false
+      - name: Install native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config autoconf autoconf-archive automake libtool libtool-bin flex bison nasm libssl-dev
+      - name: Apply consumption veto patch
+        working-directory: upstream
+        run: git apply ../patches/skymp-respect-consumption-veto.patch
+      - name: Configure without game data
+        working-directory: upstream
+        run: >-
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_CLIENT=OFF -DBUILD_SKYRIM_PLATFORM=OFF -DBUILD_SCRIPTS=OFF
+          -DBUILD_FRONT=OFF -DBUILD_UNIT_TESTS=ON -DDOWNLOAD_SKYRIM_DATA=OFF
+      - name: Compile server and native tests
+        working-directory: upstream
+        run: cmake --build build --target skymp5-server unit --parallel 2
+      - name: Record scope
+        run: echo 'Compilation only. Native tests and game compatibility require privately supplied Skyrim data and two clients.' >> "$GITHUB_STEP_SUMMARY"
