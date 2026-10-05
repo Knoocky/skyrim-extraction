@@ -10,7 +10,7 @@
 
 ## Запуск
 
-Нужен Node.js 24.x с модулем `node:sqlite`. Проверено на Node.js 24.19.0 в Linux.
+Нужен Node.js 24.x с модулем `node:sqlite`. Проверено на Node.js 24.19.0 в Linux и Windows (GitHub Actions).
 Для Windows/Linux добавлен workflow `.github/workflows/core.yml`; результаты прогонов — во вкладке Actions.
 
 Клонируйте репозиторий или распакуйте архив, откройте терминал в папке `skyrim-extraction` и выполните:
