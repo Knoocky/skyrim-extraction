@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
+import { once } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
 import { ExtractionCore } from '../src/core.mjs';
 const reject = (code, fn) => assert.throws(fn, e => e.code === code);
@@ -157,4 +159,24 @@ test('v2 migration retains active loot and identities, starts empty progression 
   } finally { c.close(); }
   const reopened = new ExtractionCore(file);
   try { assert.equal(reopened.snapshot('legacy').revision, 10); } finally { reopened.close(); }
+});
+
+test('two independent writers racing contract redemption grant one reward', { timeout: 15000 }, async t => {
+  const f = fixture(t), c = f.core;
+  const w = f.loot([{ template: 'healing_potion', quantity: 3 }]);
+  c.acceptContract('accept', 'a', 'supplies');
+  const workers = ['one', 'two'].map(request => new Worker(new URL('./race-worker.mjs', import.meta.url), {
+    workerData: { filename: f.file, operation: 'turnInContract', args: [request, 'a', 'supplies', [w.items[0].id]] }
+  }));
+  try {
+    await Promise.all(workers.map(worker => once(worker, 'message')));
+    const messages = workers.map(worker => once(worker, 'message'));
+    workers.forEach(worker => worker.postMessage('start'));
+    const results = (await Promise.all(messages)).map(([result]) => result);
+    assert.equal(results.filter(r => r.ok).length, 1);
+    assert.equal(results.filter(r => r.code === 'CONTRACT_NOT_ACTIVE').length, 1);
+    assert.equal(c.progression('a').gold, 80);
+    assert.equal(c.progression('a').xp, 130);
+    assert.equal(c.snapshot('a').stash.some(i => i.id === w.items[0].id), false);
+  } finally { await Promise.all(workers.map(worker => worker.terminate())); }
 });
