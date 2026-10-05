@@ -23,3 +23,6 @@ test-results/
 playwright-report/
 
 *.sxe.gz
+
+# Local deployment configuration must not enter a public commit.
+*.local.json
