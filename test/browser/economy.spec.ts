@@ -22,14 +22,14 @@ test('trade and ambiguous reply retry preserve one purchase; character switch sh
   });
   await traders.locator('li').filter({ has: page.getByText('Зелье лечения', { exact: true }) }).getByRole('button', { name: 'Купить', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Повторить запрос' })).toBeVisible();
-  await expect(page.getByLabel('Персонаж')).toBeDisabled();
+  await expect(page.getByRole('combobox', { name: 'Персонаж', exact: true })).toBeDisabled();
   await page.getByRole('button', { name: 'Повторить запрос' }).click();
   await expect(page.getByText('35 золота', { exact: true })).toBeVisible();
   const stash = page.locator('section').filter({ has: page.getByRole('heading', { name: /Личный схрон/ }) });
   await expect(stash.locator('li')).toHaveCount(1);
   await page.getByRole('button', { name: 'Принять', exact: true }).first().click();
   await expect(page.getByRole('button', { name: 'Сдать припасы' })).toBeDisabled();
-  await page.getByLabel('Персонаж').selectOption('bob');
+  await page.getByRole('combobox', { name: 'Персонаж', exact: true }).selectOption('bob');
   await expect(page.getByText('0 золота', { exact: true })).toBeVisible();
   await expect(stash.locator('li')).toHaveCount(3);
   await page.screenshot({ path: 'test-results/economy-desktop.png', fullPage: true });
@@ -41,7 +41,7 @@ test('trade and ambiguous reply retry preserve one purchase; character switch sh
 
 test('materials can be crafted through UI and bankruptcy recovery cannot be sold', async ({ page, request }) => {
   await page.goto('/?demo=1');
-  await page.getByLabel('Персонаж').selectOption('bob');
+  await page.getByRole('combobox', { name: 'Персонаж', exact: true }).selectOption('bob');
   await expect(page.getByText('0 золота', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: /Выйти в экспедицию/ }).click();
   const pickup = page.getByRole('button', { name: 'Забрать', exact: true });
@@ -72,7 +72,7 @@ test('materials can be crafted through UI and bankruptcy recovery cannot be sold
 
 test('demo mission event remains provisional until extraction and reward claim', async ({ page, request }) => {
   await page.goto('/?demo=1');
-  await page.getByLabel('Персонаж').selectOption('bob');
+  await page.getByRole('combobox', { name: 'Персонаж', exact: true }).selectOption('bob');
   const before = await (await request.get('/api/state?player=bob')).json();
   const mission = page.locator('article').filter({ has: page.getByRole('heading', { name: 'Разведка руин', exact: true }) });
   await mission.getByRole('button', { name: 'Взять задание' }).click();
@@ -90,7 +90,7 @@ test('demo mission event remains provisional until extraction and reward claim',
 
 test('keyboard search and a fresh character finish the full beacon chain', async ({page, request}) => {
   await page.goto('/?demo=1');
-  await page.getByLabel('Персонаж').selectOption('cora');
+  await page.getByRole('combobox', { name: 'Персонаж', exact: true }).selectOption('cora');
   const search=page.getByLabel('Поиск в убежище');
   await search.focus(); await page.keyboard.type('zzzz');
   await expect(page.locator('.crafting article')).toHaveCount(0);
@@ -120,7 +120,7 @@ test('keyboard search and a fresh character finish the full beacon chain', async
   const state=await (await request.get('/api/state?player=cora')).json();
   expect(state.player.progression.finaleCompleted).toBe(true);
   expect(state.player.progression.reputation).toBe(100);
-  await page.getByLabel('Задания',{exact:true}).selectOption('completed');
+  await page.getByRole('combobox', { name: 'Задания', exact: true }).selectOption('completed');
   await expect(page.getByRole('button',{name:'Взять задание',exact:true})).toHaveCount(0);
   await page.setViewportSize({width:1280,height:800});
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);

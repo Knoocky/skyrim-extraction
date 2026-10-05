@@ -11,7 +11,7 @@ export function EconomyPanel({ player, market, demo = false, busy, act }: Props)
   const p = player.progression, disabled = busy || !!player.active;
   const traders: Record<string, string> = { smith: 'Кузнец', apothecary: 'Лекарь', antiquarian: 'Антиквар' };
   return <>
-    <div className="toolbar"><label>Поиск в убежище <input type="search" value={query} onChange={e => setQuery(e.target.value)} placeholder="Предмет, рецепт или задание"/></label><label>Задания <select value={missionFilter} onChange={e => setMissionFilter(e.target.value)}><option value="all">Все</option><option value="active">Принятые</option><option value="available">Доступные</option><option value="completed">Выполненные</option></select></label></div>
+    <div className="toolbar"><label>Поиск в убежище <input type="search" value={query} onChange={e => setQuery(e.target.value)} placeholder="Предмет, рецепт или задание"/></label><label>Задания <select aria-label="Задания" value={missionFilter} onChange={e => setMissionFilter(e.target.value)}><option value="all">Все</option><option value="active">Принятые</option><option value="available">Доступные</option><option value="completed">Выполненные</option></select></label></div>
     <p role="status">Репутация убежища: {p.reputation} · {p.finaleCompleted ? 'Маяк восстановлен — основная цепочка завершена' : 'Цель: восстановить последний маяк'}</p>
     <div className="progression" aria-label="Прогресс персонажа"><strong>{p.gold} золота</strong><span>Уровень {p.level} · {p.xp} опыта</span><span>Места: {p.capacity.used}/{p.capacity.limit}</span><span>Очки навыков: {p.skillPoints}</span></div>
     {player.active && <p className="hint">Торговля, сдача контрактов и улучшения доступны после возвращения в убежище.</p>}
