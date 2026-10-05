@@ -98,3 +98,5 @@ export function installEconomicGuards(mp: GameMode, managed: (actorId: number) =
     }
   };
 }
+
+export { ExtractionPolicy } from "../src/extraction-policy.ts";

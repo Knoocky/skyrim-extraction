@@ -15,7 +15,9 @@
     "build": "node scripts/build.mjs",
     "demo:ui": "npm run build && node scripts/ui-demo.ts",
     "backup": "node scripts/backup.mjs",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "doctor": "node scripts/doctor.mjs",
+    "health": "node scripts/health.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

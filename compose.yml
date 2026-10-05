@@ -1,0 +1,22 @@
+services:
+  init:
+    build: .
+    image: skyrim-extraction-core:local
+    profiles: [bootstrap]
+    command: [node, scripts/init-server.mjs]
+    volumes: [core-data:/app/data]
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  core:
+    build: .
+    image: skyrim-extraction-core:local
+    ports: ["127.0.0.1:8787:8787"]
+    volumes: [core-data:/app/data]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+volumes:
+  core-data:
