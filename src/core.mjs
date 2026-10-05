@@ -14,7 +14,10 @@ const canonical = value => {
   return JSON.stringify(value);
 };
 
-// Deliberately small catalog. Each row is ONE instance, including potions.
+export const MAX_STACK = 9999;
+const validQuantity = value => Number.isSafeInteger(value) && value > 0 && value <= MAX_STACK;
+const stackable = template => template === 'healing_potion';
+// Equipment has quantity 1; consumable stacks retain their own UUID.
 export const CATALOG = Object.freeze(['iron_sword', 'hunting_bow', 'healing_potion', 'silver_ring', 'dwemer_relic']);
 
 /** Trusted in-process service, NOT a public client API.
@@ -25,54 +28,81 @@ export class ExtractionCore {
   constructor(filename, { authority = {} } = {}) {
     this.authority = authority;
     this.db = new DatabaseSync(filename);
-    this.db.exec(`
-      PRAGMA foreign_keys = ON;
-      PRAGMA busy_timeout = 5000;
-      PRAGMA journal_mode = WAL;
-      PRAGMA synchronous = FULL;
-      CREATE TABLE IF NOT EXISTS players (id TEXT PRIMARY KEY);
-      CREATE TABLE IF NOT EXISTS raids (
-        id TEXT PRIMARY KEY, status TEXT NOT NULL CHECK(status IN ('OPEN', 'CLOSED'))
-      );
-      CREATE TABLE IF NOT EXISTS participants (
-        id TEXT PRIMARY KEY,
-        player_id TEXT NOT NULL REFERENCES players(id),
-        raid_id TEXT NOT NULL REFERENCES raids(id),
-        status TEXT NOT NULL CHECK(status IN ('ACTIVE', 'DEAD', 'EXTRACTED', 'FORFEITED')),
-        UNIQUE(player_id, raid_id)
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS one_active_raid_per_player
-        ON participants(player_id) WHERE status = 'ACTIVE';
-      CREATE TABLE IF NOT EXISTS locations (
-        id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK(kind IN ('STASH', 'INVENTORY', 'CONTAINER')),
-        player_id TEXT REFERENCES players(id),
-        raid_id TEXT REFERENCES raids(id),
-        participant_id TEXT REFERENCES participants(id),
-        CHECK (
-          (kind = 'STASH' AND player_id IS NOT NULL AND raid_id IS NULL AND participant_id IS NULL) OR
-          (kind = 'INVENTORY' AND player_id IS NOT NULL AND raid_id IS NOT NULL AND participant_id IS NOT NULL) OR
-          (kind = 'CONTAINER' AND player_id IS NULL AND raid_id IS NOT NULL AND participant_id IS NULL)
-        )
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS one_stash ON locations(player_id) WHERE kind = 'STASH';
-      CREATE UNIQUE INDEX IF NOT EXISTS one_inventory ON locations(participant_id) WHERE kind = 'INVENTORY';
-      CREATE TABLE IF NOT EXISTS items (
-        id TEXT PRIMARY KEY, template TEXT NOT NULL, location_id TEXT NOT NULL REFERENCES locations(id)
-      );
-      CREATE INDEX IF NOT EXISTS items_at_location ON items(location_id);
-      CREATE TABLE IF NOT EXISTS receipts (
-        actor TEXT NOT NULL, request_id TEXT NOT NULL, command TEXT NOT NULL,
-        result TEXT NOT NULL, PRIMARY KEY(actor, request_id)
-      );
-    `);
+    try {
+      this.db.exec(`
+        PRAGMA foreign_keys = ON;
+        PRAGMA busy_timeout = 5000;
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = FULL;
+        BEGIN IMMEDIATE;
+      `);
+      const version = this.row('PRAGMA user_version').user_version;
+      requireThat(version <= 1, 'UNSUPPORTED_SCHEMA');
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS players (id TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS raids (
+          id TEXT PRIMARY KEY, status TEXT NOT NULL CHECK(status IN ('OPEN', 'CLOSED'))
+        );
+        CREATE TABLE IF NOT EXISTS participants (
+          id TEXT PRIMARY KEY,
+          player_id TEXT NOT NULL REFERENCES players(id),
+          raid_id TEXT NOT NULL REFERENCES raids(id),
+          status TEXT NOT NULL CHECK(status IN ('ACTIVE', 'DEAD', 'EXTRACTED', 'FORFEITED')),
+          UNIQUE(player_id, raid_id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS one_active_raid_per_player
+          ON participants(player_id) WHERE status = 'ACTIVE';
+        CREATE TABLE IF NOT EXISTS locations (
+          id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL CHECK(kind IN ('STASH', 'INVENTORY', 'CONTAINER')),
+          player_id TEXT REFERENCES players(id),
+          raid_id TEXT REFERENCES raids(id),
+          participant_id TEXT REFERENCES participants(id),
+          CHECK (
+            (kind = 'STASH' AND player_id IS NOT NULL AND raid_id IS NULL AND participant_id IS NULL) OR
+            (kind = 'INVENTORY' AND player_id IS NOT NULL AND raid_id IS NOT NULL AND participant_id IS NOT NULL) OR
+            (kind = 'CONTAINER' AND player_id IS NULL AND raid_id IS NOT NULL AND participant_id IS NULL)
+          )
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS one_stash ON locations(player_id) WHERE kind = 'STASH';
+        CREATE UNIQUE INDEX IF NOT EXISTS one_inventory ON locations(participant_id) WHERE kind = 'INVENTORY';
+        CREATE TABLE IF NOT EXISTS items (
+          id TEXT PRIMARY KEY, template TEXT NOT NULL, location_id TEXT NOT NULL REFERENCES locations(id)
+        );
+        CREATE INDEX IF NOT EXISTS items_at_location ON items(location_id);
+        CREATE TABLE IF NOT EXISTS receipts (
+          actor TEXT NOT NULL, request_id TEXT NOT NULL, command TEXT NOT NULL,
+          result TEXT NOT NULL, PRIMARY KEY(actor, request_id)
+        );
+      `);
+      if (version === 0) {
+        this.db.exec(`
+          ALTER TABLE items ADD COLUMN quantity INTEGER NOT NULL DEFAULT 1
+            CHECK(typeof(quantity) = 'integer' AND quantity BETWEEN 1 AND 9999);
+          CREATE TRIGGER item_catalog_insert BEFORE INSERT ON items
+          WHEN NEW.template NOT IN ('iron_sword','hunting_bow','healing_potion','silver_ring','dwemer_relic')
+            OR (NEW.template <> 'healing_potion' AND NEW.quantity <> 1)
+          BEGIN SELECT RAISE(ABORT, 'invalid item template or quantity'); END;
+          CREATE TRIGGER item_catalog_update BEFORE UPDATE OF template, quantity ON items
+          WHEN NEW.template NOT IN ('iron_sword','hunting_bow','healing_potion','silver_ring','dwemer_relic')
+            OR (NEW.template <> 'healing_potion' AND NEW.quantity <> 1)
+          BEGIN SELECT RAISE(ABORT, 'invalid item template or quantity'); END;
+          PRAGMA user_version = 1;
+        `);
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec('ROLLBACK');
+      this.db.close();
+      throw error;
+    }
   }
   close() { this.db.close(); }
   row(sql, ...params) { return this.db.prepare(sql).get(...params); }
   rows(sql, ...params) { return this.db.prepare(sql).all(...params).map(row => ({ ...row })); }
   run(sql, ...params) { return this.db.prepare(sql).run(...params); }
   itemsAt(locationId) {
-    return this.rows('SELECT id, template FROM items WHERE location_id = ? ORDER BY id', locationId);
+    return this.rows('SELECT id, template, quantity FROM items WHERE location_id = ? ORDER BY id', locationId);
   }
   stash(playerId) {
     const stash = this.row("SELECT id FROM locations WHERE kind = 'STASH' AND player_id = ?", playerId);
@@ -115,20 +145,84 @@ export class ExtractionCore {
       const stashId = randomUUID();
       this.run("INSERT INTO locations VALUES (?, 'STASH', ?, NULL, NULL)", stashId, playerId);
       for (const template of ['iron_sword', 'hunting_bow', 'healing_potion']) {
-        this.run('INSERT INTO items VALUES (?, ?, ?)', randomUUID(), template, stashId);
+        this.run('INSERT INTO items (id, template, location_id) VALUES (?, ?, ?)', randomUUID(), template, stashId);
       }
       return { playerId, stashId, items: this.itemsAt(stashId) };
     });
   }
   // Trusted world provisioning. Clients cannot mint items or choose this loot table.
   createRaid(requestId, templates = ['silver_ring', 'dwemer_relic']) {
-    requireThat(Array.isArray(templates) && templates.length <= 100 && templates.every(t => CATALOG.includes(t)), 'INVALID_LOOT');
+    requireThat(Array.isArray(templates) && templates.length <= 100 && Array.from(templates).every(entry => {
+      if (typeof entry === 'string') return CATALOG.includes(entry);
+      return entry !== null && typeof entry === 'object' && !Array.isArray(entry)
+        && Object.hasOwn(entry, 'template') && Object.hasOwn(entry, 'quantity')
+        && Object.keys(entry).every(key => key === 'template' || key === 'quantity')
+        && CATALOG.includes(entry.template) && validQuantity(entry.quantity)
+        && (stackable(entry.template) || entry.quantity === 1);
+    }), 'INVALID_LOOT');
     return this.command('system', requestId, 'createRaid', { templates }, () => {
       const raidId = randomUUID(), containerId = randomUUID();
       this.run("INSERT INTO raids VALUES (?, 'OPEN')", raidId);
       this.run("INSERT INTO locations VALUES (?, 'CONTAINER', NULL, ?, NULL)", containerId, raidId);
-      for (const template of templates) this.run('INSERT INTO items VALUES (?, ?, ?)', randomUUID(), template, containerId);
+      for (const entry of templates) {
+        const { template, quantity } = typeof entry === 'string' ? { template: entry, quantity: 1 } : entry;
+        this.run('INSERT INTO items (id, template, location_id, quantity) VALUES (?, ?, ?, ?)', randomUUID(), template, containerId, quantity);
+      }
       return { raidId, containerId, items: this.itemsAt(containerId) };
+    });
+  }
+  // Stash editing is allowed only outside an active expedition. Identity is supplied by the adapter.
+  editableStash(playerId) {
+    const locationId = this.stash(playerId);
+    requireThat(!this.row("SELECT id FROM participants WHERE player_id = ? AND status = 'ACTIVE'", playerId), 'ALREADY_ACTIVE');
+    return locationId;
+  }
+  splitStack(requestId, playerId, itemId, quantity) {
+    requireThat([playerId, itemId].every(validId), 'INVALID_ID');
+    requireThat(validQuantity(quantity), 'INVALID_QUANTITY');
+    return this.command('player:' + playerId, requestId, 'splitStack', { playerId, itemId, quantity }, () => {
+      const locationId = this.editableStash(playerId);
+      const item = this.row('SELECT * FROM items WHERE id = ? AND location_id = ?', itemId, locationId);
+      requireThat(item, 'ITEM_NOT_IN_STASH');
+      requireThat(stackable(item.template), 'NOT_STACKABLE');
+      requireThat(quantity < item.quantity, 'INSUFFICIENT_QUANTITY');
+      const newItemId = randomUUID();
+      this.run('UPDATE items SET quantity = quantity - ? WHERE id = ?', quantity, itemId);
+      this.run('INSERT INTO items (id, template, location_id, quantity) VALUES (?, ?, ?, ?)', newItemId, item.template, locationId, quantity);
+      return { itemId, remaining: item.quantity - quantity, newItemId, quantity };
+    });
+  }
+  mergeStacks(requestId, playerId, sourceId, targetId) {
+    requireThat([playerId, sourceId, targetId].every(validId), 'INVALID_ID');
+    requireThat(sourceId !== targetId, 'SAME_STACK');
+    return this.command('player:' + playerId, requestId, 'mergeStacks', { playerId, sourceId, targetId }, () => {
+      const locationId = this.editableStash(playerId);
+      const source = this.row('SELECT * FROM items WHERE id = ? AND location_id = ?', sourceId, locationId);
+      const target = this.row('SELECT * FROM items WHERE id = ? AND location_id = ?', targetId, locationId);
+      requireThat(source && target, 'ITEM_NOT_IN_STASH');
+      requireThat(stackable(source.template) && source.template === target.template, 'INCOMPATIBLE_STACKS');
+      const quantity = source.quantity + target.quantity;
+      requireThat(quantity <= MAX_STACK, 'STACK_LIMIT');
+      this.run('UPDATE items SET quantity = ? WHERE id = ?', quantity, targetId);
+      this.run('DELETE FROM items WHERE id = ?', sourceId);
+      return { sourceId, targetId, quantity };
+    });
+  }
+  // Records an authorized expenditure only. A receipt is NOT a replayable healing effect.
+  consume(requestId, playerId, raidId, itemId, quantity = 1) {
+    requireThat([playerId, raidId, itemId].every(validId), 'INVALID_ID');
+    requireThat(validQuantity(quantity), 'INVALID_QUANTITY');
+    return this.command('player:' + playerId, requestId, 'consume', { playerId, raidId, itemId, quantity }, () => {
+      const participant = this.active(playerId, raidId);
+      const item = this.row('SELECT * FROM items WHERE id = ? AND location_id = ?', itemId, participant.inventory_id);
+      requireThat(item, 'ITEM_NOT_IN_INVENTORY');
+      requireThat(stackable(item.template), 'NOT_CONSUMABLE');
+      requireThat(quantity <= item.quantity, 'INSUFFICIENT_QUANTITY');
+      requireThat(this.authority.canConsume?.({ playerId, raidId, itemId, template: item.template, quantity }) === true, 'CONSUMPTION_NOT_AUTHORIZED');
+      const remaining = item.quantity - quantity;
+      if (remaining === 0) this.run('DELETE FROM items WHERE id = ?', itemId);
+      else this.run('UPDATE items SET quantity = ? WHERE id = ?', remaining, itemId);
+      return { itemId, consumed: quantity, remaining };
     });
   }
   joinRaid(requestId, playerId, raidId, itemIds) {
