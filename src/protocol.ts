@@ -29,6 +29,7 @@ export interface Command {
   worldApproved?: boolean;
 }
 const fields: Record<string, string[]> = {
+  recoveryKit: [], craft: ['recipeId', 'batches'], restockMarket: ['cycle'],
   registerPlayer: ['playerId'], createWorld: ['loot'], openConnection: ['playerId'],
   closeConnection: ['connectionId'], closeWorld: ['worldId'],
   recordDeath: ['playerId', 'worldId', 'expeditionId'],
@@ -41,7 +42,7 @@ const fields: Record<string, string[]> = {
   acceptContract: ['contractId'], turnInContract: ['contractId', 'itemIds'],
   splitStack: ['itemId', 'quantity'], mergeStacks: ['sourceId', 'targetId']
 };
-const connected = new Set(['beginExpedition', 'pickup', 'consume', 'extract', 'splitStack', 'mergeStacks', 'buy', 'sell', 'upgrade', 'learnSkill', 'acceptContract', 'turnInContract']);
+const connected = new Set(['beginExpedition', 'pickup', 'consume', 'extract', 'splitStack', 'mergeStacks', 'recoveryKit', 'craft', 'buy', 'sell', 'upgrade', 'learnSkill', 'acceptContract', 'turnInContract']);
 const needsApproval = new Set(['pickup', 'consume', 'extract', 'recordDeath']);
 
 export function decodeCommand(raw: unknown): Command {
@@ -54,7 +55,7 @@ export function decodeCommand(raw: unknown): Command {
   keys(payload, fields[operation]);
   for (const name of fields[operation]) {
     if (name.endsWith('Id')) id(payload[name]);
-    if (['quantity', 'expectedLevel', 'expectedRank'].includes(name)) integer(payload[name]);
+    if (['quantity', 'expectedLevel', 'expectedRank', 'batches', 'cycle'].includes(name)) integer(payload[name]);
   }
   if (['beginExpedition', 'turnInContract'].includes(operation) && (!Array.isArray(payload.itemIds) || payload.itemIds.length > 100 || !payload.itemIds.every(x => { id(x); return true; }))) {
     throw new DomainError('INVALID_LOADOUT');
@@ -77,6 +78,8 @@ export function dispatch(core: ExtractionCore, command: Command): unknown {
   try {
     if (connected.has(op)) return core.executeConnected(command.connectionId!, (playerId: string) => {
       switch (op) {
+        case 'recoveryKit': return core.recoveryKit(r, playerId);
+        case 'craft': return core.craft(r, playerId, p.recipeId, p.batches);
         case 'buy': return core.buy(r, playerId, p.offerId, p.quantity);
         case 'sell': return core.sell(r, playerId, p.itemId, p.quantity);
         case 'upgrade': return core.upgrade(r, playerId, p.moduleId, p.expectedLevel);
@@ -92,6 +95,7 @@ export function dispatch(core: ExtractionCore, command: Command): unknown {
       }
     });
     switch (op) {
+      case 'restockMarket': return core.restockMarket(r, p.cycle);
       case 'registerPlayer': return core.registerPlayer(r, p.playerId);
       case 'createWorld': return core.createRaid(r, p.loot as string[]);
       case 'openConnection': return core.openConnection(r, p.playerId);

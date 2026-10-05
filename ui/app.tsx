@@ -3,9 +3,10 @@ import { createRoot } from 'react-dom/client';
 import type { ViewState, Intent } from './types.ts';
 import type { Item } from '../src/client.ts';
 import './style.css';
+import { ITEMS } from '../src/catalog.mjs';
 import { EconomyPanel } from './economy.tsx';
 
-const names: Record<string, string> = { iron_sword: 'Железный меч', hunting_bow: 'Охотничий лук', healing_potion: 'Зелье лечения', silver_ring: 'Серебряное кольцо', dwemer_relic: 'Двемерская реликвия' };
+const names: Record<string, string> = Object.fromEntries(Object.entries(ITEMS).map(([id, item]) => [id, item.name]));
 const demo = new URLSearchParams(location.search).get('demo') === '1';
 function App() {
   const [actor, setActor] = useState('alice');
@@ -59,7 +60,7 @@ function App() {
   const active = state?.player.active;
   const context = active ? { worldId: active.worldId, expeditionId: active.expeditionId } : {};
   function itemRow(item: Item, action?: React.ReactNode) {
-    return <li key={item.id}><div><strong>{names[item.template] ?? item.template}</strong><small>{item.quantity > 1 ? `${item.quantity} шт.` : '1 предмет'}</small></div>{action}</li>;
+    return <li key={item.id}><div><strong>{names[item.template] ?? item.template}</strong><small>{item.recovery ? 'Аварийный комплект · не для продажи' : item.quantity > 1 ? `${item.quantity} шт.` : '1 предмет'}</small></div>{action}</li>;
   }
   return <main>
     <header><div><p className="eyebrow">SKYRIM EXTRACTION</p><h1>{active ? 'Экспедиция' : 'Убежище'}</h1></div><span className={'status ' + (busy ? 'pending' : '')}>{busy ? 'Синхронизация…' : state ? 'Связь установлена' : 'Ожидаем адаптер'}</span></header>
@@ -74,7 +75,7 @@ function App() {
         {!active && <button className="primary" disabled={locked || !state} onClick={() => void act('beginExpedition', { worldId: state!.worldId, itemIds: selected })}>Выйти в экспедицию · {selected.length}</button>}
       </section>
       <section><h2>Снаряжение и добыча <span>{active?.items.length ?? 0}</span></h2><p className="hint">Эти предметы находятся под риском до экстракции.</p>
-        <ul>{active?.items.map(item => itemRow(item, item.template === 'healing_potion' && <button disabled={locked} onClick={() => void act('consume', { ...context, itemId: item.id, quantity: 1 })}>{demo ? 'Списать 1' : 'Использовать'}</button>))}</ul>
+        <ul>{active?.items.map(item => itemRow(item, ['healing_potion', 'food_ration'].includes(item.template) && <button disabled={locked} onClick={() => void act('consume', { ...context, itemId: item.id, quantity: 1 })}>{demo ? 'Списать 1' : 'Использовать'}</button>))}</ul>
         {!active && <p className="empty">Экспедиция ещё не начата.</p>}
         {active && <div className="footer-actions"><button className="primary" disabled={locked || (!demo && !state?.exitId)} onClick={() => void act('extract', { ...context, exitId: demo ? 'demo-north' : state?.exitId })}>{demo ? 'Имитировать выход' : 'Начать экстракцию'}</button>{demo && <button className="danger" disabled={locked} onClick={() => void act('demoDeath', context)}>Имитировать смерть</button>}</div>}
       </section>
@@ -82,7 +83,7 @@ function App() {
         {state?.containers.map((container, index) => <div className="container" key={container.id}><h3>Контейнер {index + 1}</h3><ul>{container.items.map(item => itemRow(item, <button disabled={locked || !active} onClick={() => void act('pickup', { ...context, containerId: container.id, itemId: item.id })}>Забрать</button>))}</ul>{container.items.length === 0 && <p className="empty">Пусто</p>}</div>)}
       </section>
     </div>
-    {state && <EconomyPanel player={state.player} busy={locked} act={act}/> }
+    {state && <EconomyPanel player={state.player} market={state.market} busy={locked} act={act}/> }
     <footer>{demo ? 'После остановки стенда временная база удаляется. Это не игровой релиз.' : 'Действия подтверждает сервер. При потере связи дождись восстановления.'}</footer>
   </main>;
 }

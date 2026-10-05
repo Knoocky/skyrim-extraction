@@ -50,7 +50,7 @@ test('100 seeded scenarios / 10000 transitions conserve supply through retries, 
         const projection = core.projection();
         assert.equal(projection.revision, core.projectionMetadata().revision);
         for (const player of projection.players) {
-          const { databaseId, revision, ...snapshot } = core.snapshot(player.playerId);
+          const { databaseId, revision, market, ...snapshot } = core.snapshot(player.playerId);
           assert.deepEqual(player, snapshot);
         }
       }

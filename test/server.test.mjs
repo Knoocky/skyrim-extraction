@@ -107,3 +107,20 @@ test('HTTP economy rejects client prices and foreign identity; current connectio
   assert.equal(next.progression.contracts[0].status, 'ACCEPTED');
   await rejected('INVALID_FIELDS', () => command('turnInContract', { contractId: 'supplies', itemIds: [], gold: 9999 }, 'reward', extra));
 });
+
+test('HTTP crafting accepts recipe IDs only; stock reset remains server-only', async t => {
+  const { command, client } = await fixture(t);
+  await command('registerPlayer', { playerId: 'alice' });
+  const { result: session } = await command('openConnection', { playerId: 'alice' });
+  const extra = { connectionId: session.connectionId };
+  await rejected('INVALID_FIELDS', () => command('craft', { recipeId: 'cook_rations', batches: 1, output: 'dwemer_relic' }, 'mint', extra));
+  await rejected('INVALID_FIELDS', () => command('restockMarket', { cycle: 1 }, 'stock', extra));
+  await rejected('RECOVERY_NOT_NEEDED', () => command('recoveryKit', {}, 'kit', extra));
+  const state = await client.snapshot(session.connectionId);
+  const sword = state.stash.find(i => i.template === 'iron_sword');
+  await command('sell', { itemId: sword.id, quantity: 1 }, 'sell', extra);
+  await command('buy', { offerId: 'herb', quantity: 1 }, 'herb', extra);
+  assert.equal((await client.snapshot(session.connectionId)).market.stock.find(s => s.offerId === 'herb').quantity, 99);
+  await command('restockMarket', { cycle: 1 }, 'server-restock');
+  assert.equal((await client.snapshot(session.connectionId)).market.stock.find(s => s.offerId === 'herb').quantity, 100);
+});

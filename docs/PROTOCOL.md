@@ -1,4 +1,4 @@
-# Протокол 1 / схема базы 3
+# Протокол 1 / схема базы 4
 
 ## Доверие
 
@@ -18,7 +18,7 @@ HTTP API — внутренний канал доверенного SkyMP-ада
 
 Форма команды: `{protocolVersion: 1, requestId, operation, payload, connectionId?, worldApproved?}`. Точные поля и ограничения — `src/protocol.ts`; неизвестные поля отклоняются.
 
-Системные операции: registerPlayer, createWorld, openConnection, closeConnection, closeWorld, recordDeath. Операции подключённого игрока: beginExpedition, pickup, consume, extract, splitStack, mergeStacks, buy, sell, upgrade, learnSkill, acceptContract, turnInContract. Для них playerId выводится из connectionId, а не принимается из payload. Операции активной экспедиции требуют её expeditionId вместе с worldId.
+Системные операции: registerPlayer, createWorld, openConnection, closeConnection, closeWorld, recordDeath, restockMarket. Операции подключённого игрока: beginExpedition, pickup, consume, extract, splitStack, mergeStacks, buy, sell, upgrade, learnSkill, acceptContract, turnInContract, craft, recoveryKit. Для них playerId выводится из connectionId, а не принимается из payload. Операции активной экспедиции требуют её expeditionId вместе с worldId.
 
 ## Идентичность и повторы
 
@@ -39,3 +39,5 @@ SkyMpInventoryPort заменяет инвентари целиком и чит�
 Полный снимок содержит схроны всех игроков и доступен только серверу. Игровой UI должен получать только собственный схрон и разрешённые контейнеры. Demo-host показывает контейнеры двух тестовых персонажей намеренно.
 
 Очередь не гарантирует однократность временных эффектов: лечение, урон и награды требуют отдельного устойчивого механизма и игрового подтверждения. Они пока не реализованы.
+
+С версии 0.5 projection и snapshot также содержат market: cycle и stock[{offerId,quantity}]. В предметах аварийного комплекта добавляется recovery:true; обычные предметы сохраняют прежнюю форму.

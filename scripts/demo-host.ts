@@ -33,8 +33,8 @@ export async function createDemoHost() {
     const { result } = await bridge.execute<{ connectionId: string }>({ protocolVersion: 1, operation: 'openConnection', requestId: 'connect-' + playerId, payload: { playerId } });
     sessions.set(playerId, result.connectionId);
   }
-  const { result: world } = await bridge.execute<{ raidId: string }>({ protocolVersion: 1, operation: 'createWorld', requestId: 'world', payload: { loot: ['silver_ring', 'dwemer_relic', { template: 'healing_potion', quantity: 5 }] } });
-  const allowed = new Set(['beginExpedition', 'pickup', 'consume', 'extract', 'splitStack', 'mergeStacks', 'buy', 'sell', 'upgrade', 'learnSkill', 'acceptContract', 'turnInContract', 'demoDeath']);
+  const { result: world } = await bridge.execute<{ raidId: string }>({ protocolVersion: 1, operation: 'createWorld', requestId: 'world', payload: { loot: ['silver_ring', 'dwemer_relic', { template: 'healing_potion', quantity: 5 }, { template: 'mountain_herb', quantity: 8 }, { template: 'iron_ingot', quantity: 4 }, { template: 'leather', quantity: 2 }, { template: 'raw_meat', quantity: 4 }] } });
+  const allowed = new Set(['beginExpedition', 'pickup', 'consume', 'extract', 'splitStack', 'mergeStacks', 'recoveryKit', 'craft', 'buy', 'sell', 'upgrade', 'learnSkill', 'acceptContract', 'turnInContract', 'demoDeath']);
   const assets: Record<string, [string, string]> = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/app.css': ['app.css', 'text/css'] };
   const server = createServer(async (request, response) => {
     const reply = (status: number, value: unknown) => { response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); response.end(JSON.stringify(value)); };
@@ -48,7 +48,7 @@ export async function createDemoHost() {
         const actor = url.searchParams.get('player') ?? '';
         if (!sessions.has(actor)) return reply(400, { error: 'UNKNOWN_DEMO_PLAYER' });
         const state = await client.projection();
-        return reply(200, { databaseId: state.databaseId, revision: state.revision, player: state.players.find(p => p.playerId === actor), worldId: world.raidId, containers: state.containers.filter(c => c.worldId === world.raidId) });
+        return reply(200, { databaseId: state.databaseId, revision: state.revision, player: state.players.find(p => p.playerId === actor), worldId: world.raidId, market: state.market, containers: state.containers.filter(c => c.worldId === world.raidId) });
       }
       if (request.method === 'POST' && url.pathname === '/api/intent') {
         if (!request.headers['content-type']?.startsWith('application/json')) return reply(415, { error: 'JSON_REQUIRED' });

@@ -1,14 +1,18 @@
 // Versioned, server-owned starter balance. No game FormIDs or client-provided prices.
-/** @template T @param {T} value @returns {T} */
-const freeze = value => { for (const child of Object.values(value)) if (child && typeof child === 'object') freeze(child); return Object.freeze(value); };
+import { freeze } from './catalog.mjs';
 export const ECONOMY = freeze({
-  version: 1,
+  version: 2,
   offers: [
-    { id: 'sword', trader: 'smith', template: 'iron_sword', buy: 100, sell: 25 },
-    { id: 'bow', trader: 'smith', template: 'hunting_bow', buy: 100, sell: 25 },
-    { id: 'potion', trader: 'apothecary', template: 'healing_potion', buy: 20, sell: 5 },
-    { id: 'ring', trader: 'antiquarian', template: 'silver_ring', buy: 150, sell: 60 },
-    { id: 'relic', trader: 'antiquarian', template: 'dwemer_relic', buy: 300, sell: 120 }
+    { id: 'sword', trader: 'smith', template: 'iron_sword', buy: 100, sell: 25, stock: 20 },
+    { id: 'bow', trader: 'smith', template: 'hunting_bow', buy: 100, sell: 25, stock: 20 },
+    { id: 'potion', trader: 'apothecary', template: 'healing_potion', buy: 20, sell: 5, stock: 100 },
+    { id: 'ring', trader: 'antiquarian', template: 'silver_ring', buy: 150, sell: 60, stock: 10 },
+    { id: 'relic', trader: 'antiquarian', template: 'dwemer_relic', buy: 300, sell: 120, stock: 5 },
+    { id: 'herb', trader: 'apothecary', template: 'mountain_herb', buy: 8, sell: 2, stock: 100 },
+    { id: 'ingot', trader: 'smith', template: 'iron_ingot', buy: 20, sell: 5, stock: 100 },
+    { id: 'leather', trader: 'smith', template: 'leather', buy: 15, sell: 4, stock: 100 },
+    { id: 'meat', trader: 'apothecary', template: 'raw_meat', buy: 10, sell: 2, stock: 100 },
+    { id: 'ration', trader: 'apothecary', template: 'food_ration', buy: 15, sell: 3, stock: 100 }
   ],
   contracts: [
     { id: 'supplies', name: 'Запас для лекаря', template: 'healing_potion', quantity: 3, gold: 80, xp: 100, requires: null, archive: 0 },

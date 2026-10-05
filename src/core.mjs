@@ -2,6 +2,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { SESSION_SCHEMA } from './session-schema.mjs';
 import { ECONOMY, ECONOMY_SCHEMA } from './economy.mjs';
+import { ITEMS, RECIPES, validateContent } from './catalog.mjs';
+import { craftingSchema } from './crafting-schema.mjs';
+validateContent(ECONOMY);
 
 export class DomainError extends Error {
   constructor(code) { super(code); this.name = 'DomainError'; this.code = code; }
@@ -18,9 +21,9 @@ const canonical = value => {
 
 export const MAX_STACK = 9999;
 const validQuantity = value => Number.isSafeInteger(value) && value > 0 && value <= MAX_STACK;
-const stackable = template => template === 'healing_potion';
+const stackable = template => Object.hasOwn(ITEMS, template) && ITEMS[template].stackable;
 // Equipment has quantity 1; consumable stacks retain their own UUID.
-export const CATALOG = Object.freeze(['iron_sword', 'hunting_bow', 'healing_potion', 'silver_ring', 'dwemer_relic']);
+export const CATALOG = Object.freeze(Object.keys(ITEMS));
 
 /** Trusted in-process service, NOT a public client API.
  * authority must use authoritative world state. Never forward client claims here.
@@ -39,7 +42,7 @@ export class ExtractionCore {
         BEGIN IMMEDIATE;
       `);
       const version = this.row('PRAGMA user_version').user_version;
-      requireThat(version <= 3, 'UNSUPPORTED_SCHEMA');
+      requireThat(version <= 4, 'UNSUPPORTED_SCHEMA');
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS players (id TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS raids (
@@ -98,6 +101,10 @@ export class ExtractionCore {
       }
       if (version < 3) {
         this.db.exec(ECONOMY_SCHEMA);
+      }
+      if (version < 4) {
+        this.db.exec(craftingSchema());
+        for (const offer of ECONOMY.offers) this.run('INSERT INTO market_stock VALUES (?,?)', offer.id, offer.stock);
         this.queueProjection();
       }
       requireThat(this.rows('PRAGMA foreign_key_check').length === 0, 'INVALID_DATABASE_REFERENCES');
@@ -139,7 +146,7 @@ export class ExtractionCore {
     this.run('UPDATE projection_state SET revision = revision + 1 WHERE id = 1');
     const state = this.projectionMetadata();
     const payload = {
-      protocolVersion: 1, ...state,
+      protocolVersion: 1, ...state, market: this.market(),
       players: this.rows('SELECT id FROM players ORDER BY id').map(p => this.readSnapshot(p.id)),
       worlds: this.rows('SELECT id, status FROM raids ORDER BY id'),
       containers: this.rows("SELECT id, raid_id AS worldId FROM locations WHERE kind = 'CONTAINER' ORDER BY id")
@@ -201,7 +208,8 @@ export class ExtractionCore {
     });
   }
   itemsAt(locationId) {
-    return this.rows('SELECT id, template, quantity FROM items WHERE location_id = ? ORDER BY id', locationId);
+    return this.rows('SELECT id, template, quantity, recovery_owner FROM items WHERE location_id = ? ORDER BY id', locationId)
+      .map(({ recovery_owner, ...item }) => ({ ...item, ...(recovery_owner === null ? {} : { recovery: true }) }));
   }
   stash(playerId) {
     const stash = this.row("SELECT id FROM locations WHERE kind = 'STASH' AND player_id = ?", playerId);
@@ -314,7 +322,7 @@ export class ExtractionCore {
       const participant = this.active(playerId, raidId, expeditionId);
       const item = this.row('SELECT * FROM items WHERE id = ? AND location_id = ?', itemId, participant.inventory_id);
       requireThat(item, 'ITEM_NOT_IN_INVENTORY');
-      requireThat(stackable(item.template), 'NOT_CONSUMABLE');
+      requireThat(ITEMS[item.template]?.kind === 'consumable', 'NOT_CONSUMABLE');
       requireThat(quantity <= item.quantity, 'INSUFFICIENT_QUANTITY');
       requireThat(this.authority.canConsume?.({ playerId, raidId, itemId, template: item.template, quantity }) === true, 'CONSUMPTION_NOT_AUTHORIZED');
       const remaining = item.quantity - quantity;
@@ -364,6 +372,7 @@ export class ExtractionCore {
     return this.command('system', requestId, 'recordDeath', { playerId, raidId, ...(expeditionId === undefined ? {} : { expeditionId }) }, () => {
       const participant = this.active(playerId, raidId, expeditionId), containerId = randomUUID();
       this.run("INSERT INTO locations VALUES (?, 'CONTAINER', NULL, ?, NULL)", containerId, raidId);
+      this.run('DELETE FROM items WHERE location_id=? AND recovery_owner IS NOT NULL', participant.inventory_id);
       this.run('UPDATE items SET location_id = ? WHERE location_id = ?', containerId, participant.inventory_id);
       this.run("UPDATE participants SET status = 'DEAD' WHERE id = ?", participant.id);
       return { playerId, raidId, status: 'DEAD', containerId, items: this.itemsAt(containerId) };
@@ -408,6 +417,8 @@ export class ExtractionCore {
       requireThat(offer && (stackable(offer.template) || quantity === 1), 'INVALID_PURCHASE');
       const p = this.progression(playerId), cost = Math.ceil(offer.buy * (100 - p.workshop * 5) / 100) * quantity;
       requireThat(p.gold >= cost, 'INSUFFICIENT_GOLD');
+      requireThat(this.row('SELECT quantity FROM market_stock WHERE offer_id=?', offerId)?.quantity >= quantity, 'OUT_OF_STOCK');
+      this.run('UPDATE market_stock SET quantity=quantity-? WHERE offer_id=?', quantity, offerId);
       const itemId = randomUUID();
       this.run('UPDATE progression SET gold=gold-? WHERE player_id=?', cost, playerId);
       this.run('INSERT INTO items(id,template,location_id,quantity) VALUES (?,?,?,?)', itemId, offer.template, stash, quantity);
@@ -420,6 +431,7 @@ export class ExtractionCore {
       const stash = this.editableStash(playerId);
       const item = this.row('SELECT * FROM items WHERE id=? AND location_id=?', itemId, stash);
       requireThat(item && item.quantity >= quantity, 'ITEM_NOT_IN_STASH');
+      requireThat(item.recovery_owner === null, 'RECOVERY_ITEM_RESTRICTED');
       const offer = ECONOMY.offers.find(o => o.template === item.template);
       requireThat(offer, 'NOT_TRADABLE');
       const earned = offer.sell * quantity;
@@ -482,7 +494,7 @@ export class ExtractionCore {
       const terms = JSON.parse(contract.terms);
       const items = [...itemIds].sort().map(id => {
         const item = this.row('SELECT * FROM items WHERE id=? AND location_id=?', id, stash);
-        requireThat(item && item.template === terms.template, 'INVALID_CONTRACT_ITEM');
+        requireThat(item && item.template === terms.template && item.recovery_owner === null, 'INVALID_CONTRACT_ITEM');
         return item;
       });
       requireThat(items.reduce((sum, item) => sum + item.quantity, 0) >= terms.quantity, 'INSUFFICIENT_ITEMS');
@@ -497,9 +509,60 @@ export class ExtractionCore {
       return { contractId, gold: terms.gold, xp: terms.xp, delivered: terms.quantity };
     });
   }
+  market() {
+    return { cycle: this.row('SELECT cycle FROM market_cycle WHERE id=1').cycle,
+      stock: this.rows('SELECT offer_id AS offerId, quantity FROM market_stock ORDER BY offer_id') };
+  }
+  restockMarket(requestId, cycle) {
+    requireThat(Number.isSafeInteger(cycle) && cycle > 0, 'INVALID_MARKET_CYCLE');
+    return this.command('system', requestId, 'restockMarket', { cycle }, () => {
+      requireThat(cycle > this.market().cycle, 'STALE_MARKET_CYCLE');
+      for (const offer of ECONOMY.offers) this.run('UPDATE market_stock SET quantity=? WHERE offer_id=?', offer.stock, offer.id);
+      this.run('UPDATE market_cycle SET cycle=? WHERE id=1', cycle);
+      return this.market();
+    });
+  }
+  recoveryKit(requestId, playerId) {
+    return this.command('player:' + playerId, requestId, 'recoveryKit', { playerId }, () => {
+      const stash = this.editableStash(playerId), p = this.progression(playerId);
+      const cheapestWeapon = Math.min(...ECONOMY.offers.filter(o => ITEMS[o.template].kind === 'weapon').map(o => Math.ceil(o.buy * (100 - p.workshop * 5) / 100)));
+      requireThat(this.itemsAt(stash).length === 0 && p.gold < cheapestWeapon, 'RECOVERY_NOT_NEEDED');
+      const itemId = randomUUID();
+      this.run('INSERT INTO items(id,template,location_id,quantity,recovery_owner) VALUES (?,?,?,?,?)', itemId, 'iron_sword', stash, 1, playerId);
+      return { itemId, template: 'iron_sword', recovery: true };
+    });
+  }
+  craft(requestId, playerId, recipeId, batches) {
+    requireThat(validId(recipeId) && Number.isSafeInteger(batches) && batches > 0 && batches <= 100, 'INVALID_CRAFT');
+    return this.command('player:' + playerId, requestId, 'craft', { playerId, recipeId, batches }, () => {
+      const stash = this.editableStash(playerId), recipe = RECIPES.find(r => r.id === recipeId);
+      requireThat(recipe, 'UNKNOWN_RECIPE');
+      const p = this.progression(playerId);
+      requireThat(p[recipe.module] >= recipe.level, 'RECIPE_LOCKED');
+      const cost = recipe.gold * batches;
+      requireThat(p.gold >= cost, 'INSUFFICIENT_GOLD');
+      const quantity = recipe.output.quantity * batches;
+      requireThat(quantity <= MAX_STACK && (stackable(recipe.output.template) || batches === 1), 'INVALID_CRAFT');
+      // Validate all inputs before applying; the enclosing transaction also rolls back late failures.
+      const inputs = recipe.ingredients.map(input => {
+        const items = this.rows('SELECT * FROM items WHERE location_id=? AND template=? AND recovery_owner IS NULL ORDER BY id', stash, input.template);
+        const required = input.quantity * batches;
+        requireThat(items.reduce((sum, item) => sum + item.quantity, 0) >= required, 'INSUFFICIENT_MATERIALS');
+        return { items, required };
+      });
+      for (const input of inputs) {
+        let left = input.required;
+        for (const item of input.items) { const count = Math.min(left, item.quantity); if (count) this.removeQuantity(item, count); left -= count; }
+      }
+      this.run('UPDATE progression SET gold=gold-? WHERE player_id=?', cost, playerId);
+      const itemId = randomUUID();
+      this.run('INSERT INTO items(id,template,location_id,quantity) VALUES (?,?,?,?)', itemId, recipe.output.template, stash, quantity);
+      return { recipeId, batches, itemId, template: recipe.output.template, quantity, cost };
+    });
+  }
   // Consistent reconnect snapshot. Adapter may project this into the game inventory.
   snapshot(playerId) {
     requireThat(validId(playerId), 'INVALID_PLAYER_ID');
-    return this.transaction(() => ({ ...this.projectionMetadata(), ...this.readSnapshot(playerId) }));
+    return this.transaction(() => ({ ...this.projectionMetadata(), ...this.readSnapshot(playerId), market: this.market() }));
   }
 }

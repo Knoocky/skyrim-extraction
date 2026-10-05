@@ -137,7 +137,7 @@ test('v0 migration preserves UUIDs and historical receipts; reopening is repeata
   for (let i = 0; i < 2; i++) {
     const core = new ExtractionCore(filename);
     try {
-      assert.equal(core.row('PRAGMA user_version').user_version, 3);
+      assert.equal(core.row('PRAGMA user_version').user_version, 4);
       assert.deepEqual(core.snapshot('alice').stash, [{ id: 'potion', template: 'healing_potion', quantity: 1 }]);
       assert.equal(core.row("SELECT result FROM receipts WHERE request_id = 'historical'").result, '{"old":true}');
       assert.deepEqual(core.rows('PRAGMA foreign_key_check'), []);
@@ -150,12 +150,12 @@ test('future schema is refused without creating tables or keeping a lock', t => 
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const filename = join(directory, 'future.sqlite');
   const db = new DatabaseSync(filename);
-  db.exec('PRAGMA user_version = 4'); db.close();
+  db.exec('PRAGMA user_version = 5'); db.close();
   fails('UNSUPPORTED_SCHEMA', () => new ExtractionCore(filename));
   const check = new DatabaseSync(filename);
   try {
     check.exec('BEGIN EXCLUSIVE');
-    assert.equal(check.prepare('PRAGMA user_version').get().user_version, 4);
+    assert.equal(check.prepare('PRAGMA user_version').get().user_version, 5);
     assert.equal(check.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table'").get().n, 0);
     check.exec('ROLLBACK');
   } finally { check.close(); }

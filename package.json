@@ -1,6 +1,6 @@
 {
   "name": "skyrim-extraction-core",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -17,7 +17,8 @@
     "backup": "node scripts/backup.mjs",
     "test:browser": "playwright test",
     "doctor": "node scripts/doctor.mjs",
-    "health": "node scripts/health.ts"
+    "health": "node scripts/health.ts",
+    "check:content": "node scripts/check-content.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",

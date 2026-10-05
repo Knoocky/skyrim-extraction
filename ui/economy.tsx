@@ -1,20 +1,28 @@
+import { ITEMS, RECIPES } from '../src/catalog.mjs';
 import { ECONOMY } from '../src/economy.mjs';
-import type { PlayerState } from '../src/client.ts';
-interface Props { player: PlayerState; busy: boolean; act(operation: string, payload: Record<string, unknown>): Promise<void> }
-const names: Record<string, string> = { iron_sword: 'Железный меч', hunting_bow: 'Охотничий лук', healing_potion: 'Зелье лечения', silver_ring: 'Серебряное кольцо', dwemer_relic: 'Двемерская реликвия' };
-export function EconomyPanel({ player, busy, act }: Props) {
+import type { PlayerState, Market } from '../src/client.ts';
+interface Props { player: PlayerState; market: Market; busy: boolean; act(operation: string, payload: Record<string, unknown>): Promise<void> }
+const names: Record<string, string> = Object.fromEntries(Object.entries(ITEMS).map(([id, item]) => [id, item.name]));
+export function EconomyPanel({ player, market, busy, act }: Props) {
   const p = player.progression, disabled = busy || !!player.active;
   const traders: Record<string, string> = { smith: 'Кузнец', apothecary: 'Лекарь', antiquarian: 'Антиквар' };
   return <>
     <div className="progression" aria-label="Прогресс персонажа"><strong>{p.gold} золота</strong><span>Уровень {p.level} · {p.xp} опыта</span><span>Очки навыков: {p.skillPoints}</span></div>
     {player.active && <p className="hint">Торговля, сдача контрактов и улучшения доступны после возвращения в убежище.</p>}
+    <aside className="demo"><strong>Восстановление после разорения.</strong> Если схрон пуст и не хватает денег на оружие, можно получить аварийный меч. Его нельзя продать или передать; при смерти он исчезнет. <button disabled={disabled || player.stash.length > 0 || p.gold >= Math.ceil(100 * (100 - p.workshop * 5) / 100)} onClick={() => void act('recoveryKit', {})}>Получить аварийный меч</button></aside>
+    <section className="crafting"><h2>Крафт</h2><p className="hint">Материалы берутся из схрона. Эффекты еды и зелий в Skyrim ещё не подключены.</p><div className="recipe-grid">{RECIPES.map(recipe => {
+      const ready = recipe.ingredients.every(i => player.stash.filter(item => item.template === i.template && !item.recovery).reduce((sum, item) => sum + item.quantity, 0) >= i.quantity);
+      const level = p[recipe.module as 'workshop' | 'archive'];
+      return <article className="contract" key={recipe.id}><h3>{recipe.name}</h3><p>{recipe.ingredients.map(i => `${names[i.template]} ×${i.quantity}`).join(', ')}</p><p className="hint">{recipe.gold} золота · мастерская {recipe.level} · результат ×{recipe.output.quantity}</p><button disabled={disabled || !ready || p.gold < recipe.gold || level < recipe.level} onClick={() => void act('craft', { recipeId: recipe.id, batches: 1 })}>Изготовить</button></article>;
+    })}</div></section>
     <div className="columns economy">
       <section><h2>Торговцы</h2><p className="hint">Базовый ассортимент. Скидка мастерской: {p.workshop * 5}%.</p>
         {Object.entries(traders).map(([id, title]) => <div key={id}><h3>{title}</h3><ul>{ECONOMY.offers.filter(o => o.trader === id).map(offer => {
+          const stock = market.stock.find(s => s.offerId === offer.id)?.quantity ?? 0;
           const price = Math.ceil(offer.buy * (100 - p.workshop * 5) / 100);
-          return <li key={offer.id}><div><strong>{names[offer.template]}</strong><small>Покупка {price} · продажа {offer.sell}</small></div><button disabled={disabled || p.gold < price} onClick={() => void act('buy', { offerId: offer.id, quantity: 1 })}>Купить</button></li>;
+          return <li key={offer.id}><div><strong>{names[offer.template]}</strong><small>Покупка {price} · продажа {offer.sell} · осталось {stock}</small></div><button disabled={disabled || p.gold < price || stock < 1} onClick={() => void act('buy', { offerId: offer.id, quantity: 1 })}>Купить</button></li>;
         })}</ul></div>)}
-        <h3>Продать из схрона</h3><ul>{player.stash.map(item => <li key={item.id}><div><strong>{names[item.template]}</strong><small>В наличии: {item.quantity}</small></div><button disabled={disabled} onClick={() => void act('sell', { itemId: item.id, quantity: 1 })}>Продать 1</button></li>)}</ul>
+        <h3>Продать из схрона</h3><ul>{player.stash.map(item => <li key={item.id}><div><strong>{names[item.template]}</strong><small>В наличии: {item.quantity}</small></div><button disabled={disabled || item.recovery} onClick={() => void act('sell', { itemId: item.id, quantity: 1 })}>Продать 1</button></li>)}</ul>
       </section>
       <section><h2>Контракты</h2><p className="hint">Награда фиксируется при принятии. Сдача забирает нужное количество из схрона.</p>
         {ECONOMY.contracts.map(def => {

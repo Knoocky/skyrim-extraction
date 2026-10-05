@@ -1,6 +1,6 @@
 import type { Command } from './protocol.ts';
 
-export interface Item { id: string; template: string; quantity: number }
+export interface Item { id: string; template: string; quantity: number; recovery?: boolean }
 export interface ContractTerms { id: string; name: string; template: string; quantity: number; gold: number; xp: number; version: number }
 export interface Progression {
   gold: number; xp: number; level: number; skillPoints: number;
@@ -13,7 +13,9 @@ export interface PlayerState {
   stash: Item[];
   active: null | { raidId: string; worldId: string; participantId: string; expeditionId: string; items: Item[] };
 }
+export interface Market { cycle: number; stock: { offerId: string; quantity: number }[] }
 export interface Projection {
+  market: Market;
   protocolVersion: 1;
   databaseId: string;
   revision: number;
@@ -49,6 +51,6 @@ export class CoreClient {
     return this.request<{ result: T; databaseId: string; revision: number }>('/v1/command', command);
   }
   projection() { return this.request<Projection>('/v1/projection'); }
-  snapshot(connectionId: string) { return this.request<PlayerState & { databaseId: string; revision: number }>('/v1/snapshot', { connectionId }); }
+  snapshot(connectionId: string) { return this.request<PlayerState & { databaseId: string; revision: number; market: Market }>('/v1/snapshot', { connectionId }); }
   acknowledge(state: Projection) { return this.request('/v1/ack', { databaseId: state.databaseId, revision: state.revision }); }
 }
