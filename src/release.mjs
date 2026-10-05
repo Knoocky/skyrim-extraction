@@ -14,16 +14,18 @@ function walk(root,prefix='') {
  }return entries;
 }
 const roots=['src','scripts','dist','licenses','config','docs','adapters','ui'];
-const top=['package.json','package-lock.json','LICENSE','THIRD_PARTY_NOTICES.md','README.md','tsconfig.json'];
+const top=['package.json','package-lock.json','LICENSE','THIRD_PARTY_NOTICES.md','README.md','tsconfig.json','release-files.json'];
 const allowed=path=>top.includes(path)||roots.some(root=>path.startsWith(root+'/'));
 export function createRelease(root,filename) {
  root=resolve(root);
  const pkg=JSON.parse(readFileSync(join(root,'package.json'),'utf8'));
  if(!existsSync(join(root,'dist/ui/app.js')))fail('BUILD_REQUIRED');
- const paths=[...top,...roots.flatMap(dir=>walk(join(root,dir)).map(p=>dir+'/'+p))].sort();
+ const paths=JSON.parse(readFileSync(join(root,'release-files.json'),'utf8'));
+ if(!Array.isArray(paths)||paths.length>1000||new Set(paths).size!==paths.length||!top.every(p=>paths.includes(p)))fail('INVALID_RELEASE_ALLOWLIST');
+ paths.sort();
  const files=paths.map(path=>{
   if(!safe(path)||!allowed(path)||/\.(sqlite|db|key|pem|log|p12|pfx)(-|\.|$)/i.test(path))fail('UNSAFE_PACKAGE_FILE');
-  if(lstatSync(join(root,path)).isSymbolicLink())fail('SYMLINK_NOT_ALLOWED');
+  let segment=root;for(const part of path.split('/')){segment=join(segment,part);if(lstatSync(segment).isSymbolicLink())fail('SYMLINK_NOT_ALLOWED');}
   const bytes=readFileSync(join(root,path));
   if(/-----BEGIN [A-Z ]*PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}/.test(bytes.toString()))fail('SECRET_IN_PACKAGE');
   return {path,bytes:bytes.length,sha256:digest(bytes),data:bytes.toString('base64')};
