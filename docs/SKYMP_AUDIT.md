@@ -5,7 +5,7 @@
 | Точка исходников | Наблюдение / следствие |
 |---|---|
 | skymp5-server/ts/index.ts | Gamemode загружается через require; наша библиотека собирается в CJS для Node 22 |
-| skymp5-server/cpp/server_guest_lib/InventoryBinding.cpp | get/set inventory дают серверную замену и readback; UUID и stash остаются в нашем ядре |
+| skymp5-server/cpp/addon/property_bindings/InventoryBinding.cpp | get/set inventory дают серверную замену и readback; UUID и stash остаются в нашем ядре |
 | GameModeEvent.cpp, TakeItemEvent, PutItemEvent, DropItemEvent, CraftEvent | Синхронный false блокирует соответствующее действие; Promise от HTTP-запроса не является синхронным запретом |
 | MpActor::OnEquip / EatItemEvent | Запрет onEatItem блокирует эффект, но исходный OnEquip всё равно удаляет предмет; подготовлен патч |
 | UpdateEquipmentAttemptEvent | Событие приходит после изменения, OnFireBlocked не реализован; нельзя считать его защитой экипировки |
@@ -29,3 +29,9 @@
 Vcpkg собрал часть зависимостей, но остановился на libsodium: недоступны необходимые autotools. Установка системных пакетов запрещена средой (setgroups/seteuid); Docker отсутствует. Конфигурация не завершена, сервер и native unit tests не собраны. Полный запуск также требует законно полученных игровых данных, которых здесь нет.
 
 На полноценной Linux-машине установить зависимости из закреплённых upstream build-файлов (в том числе pkg-config, autoconf, autoconf-archive, automake, libtool), применить патч, завершить CMake и сборку. Проверка патча: [patches/README.md](../patches/README.md). Успех этой процедуры здесь не заявляется. Полный манифест клиента, лицензий и образа остаётся открытым до воспроизводимой сборки; игровые ресурсы в этот репозиторий не включать.
+
+## CI: сборочный блокер снят
+
+[GitHub Actions 37340234328](https://github.com/Knoocky/skyrim-extraction/actions/runs/37340234328) успешно собрал `skymp5-server` и `unit` на Ubuntu 24.04 из закреплённого снимка с consumption-veto патчем. Системные зависимости установлены в CI, конфигурация и компиляция завершены. DOWNLOAD_SKYRIM_DATA=OFF; игровые ресурсы не загружались и не публиковались.
+
+Это подтверждает компилируемость сервера и добавленного теста, но не его исполнение, готовность клиента 1.6.1170 и не результат G1. Native unit tests не запускались: ESM-фикстур нет. Предыдущая локальная ошибка libsodium сохранена выше как история диагностики и больше не является общим блокером сборки.
