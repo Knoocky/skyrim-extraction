@@ -1,7 +1,7 @@
 // Versioned, server-owned starter balance. No game FormIDs or client-provided prices.
 import { freeze } from './catalog.mjs';
 export const ECONOMY = freeze({
-  version: 2,
+  version: 3,
   offers: [
     { id: 'sword', trader: 'smith', template: 'iron_sword', buy: 100, sell: 25, stock: 20 },
     { id: 'bow', trader: 'smith', template: 'hunting_bow', buy: 100, sell: 25, stock: 20 },
@@ -21,7 +21,11 @@ export const ECONOMY = freeze({
   ],
   modules: [
     { id: 'workshop', name: 'Мастерская', costs: [100, 200, 400], description: 'Скидка 5% за уровень на покупки.' },
-    { id: 'archive', name: 'Архив', costs: [100], description: 'Открывает контракт «Двемерский след».' }
+    { id: 'archive', name: 'Архив', costs: [100], description: 'Открывает контракт «Двемерский след».' },
+    { id: 'storage', name: 'Схрон', costs: [100, 200, 400], description: '+50 мест для экземпляров/стеков за уровень.' },
+    { id: 'alchemy', name: 'Алхимическая стойка', costs: [50, 100], description: 'Снижает плату за партию зелий на 1 золото за уровень.' },
+    { id: 'kitchen', name: 'Кухня', costs: [30, 60], description: 'Снижает плату за партию пайков на 1 золото за уровень.' },
+    { id: 'scouting', name: 'Стол разведки', costs: [100, 200, 400], description: '+10% опыта за новые контракты за уровень.' }
   ],
   skills: [{ id: 'bargaining', name: 'Переговоры', maxRank: 3, description: '+5% золота за новые контракты за ранг.' }]
 });

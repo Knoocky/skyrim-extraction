@@ -68,7 +68,7 @@ export function validateContent(economy, items = ITEMS, recipes = RECIPES) {
     if (costs.has(template)) return costs.get(template);
     let best = Math.min(Infinity, ...economy.offers.filter(o => o.template === template).map(o => Math.ceil(o.buy * 0.85)));
     for (const r of recipes.filter(r => r.output.template === template)) {
-      best = Math.min(best, (r.gold + r.ingredients.reduce((sum, i) => sum + cost(i.template) * i.quantity, 0)) / r.output.quantity);
+      best = Math.min(best, (Math.max(0, r.gold - (['healing_potion', 'food_ration'].includes(r.output.template) ? 2 : 0)) + r.ingredients.reduce((sum, i) => sum + cost(i.template) * i.quantity, 0)) / r.output.quantity);
     }
     costs.set(template, best); return best;
   };

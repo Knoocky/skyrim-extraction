@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { SESSION_SCHEMA } from './session-schema.mjs';
 import { ECONOMY, ECONOMY_SCHEMA } from './economy.mjs';
 import { ITEMS, RECIPES, validateContent } from './catalog.mjs';
+import { HUB_SCHEMA } from './hub-schema.mjs';
 import { craftingSchema } from './crafting-schema.mjs';
 validateContent(ECONOMY);
 
@@ -42,7 +43,7 @@ export class ExtractionCore {
         BEGIN IMMEDIATE;
       `);
       const version = this.row('PRAGMA user_version').user_version;
-      requireThat(version <= 4, 'UNSUPPORTED_SCHEMA');
+      requireThat(version <= 5, 'UNSUPPORTED_SCHEMA');
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS players (id TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS raids (
@@ -105,6 +106,9 @@ export class ExtractionCore {
       if (version < 4) {
         this.db.exec(craftingSchema());
         for (const offer of ECONOMY.offers) this.run('INSERT INTO market_stock VALUES (?,?)', offer.id, offer.stock);
+      }
+      if (version < 5) {
+        this.db.exec(HUB_SCHEMA);
         this.queueProjection();
       }
       requireThat(this.rows('PRAGMA foreign_key_check').length === 0, 'INVALID_DATABASE_REFERENCES');
@@ -292,6 +296,7 @@ export class ExtractionCore {
       requireThat(item, 'ITEM_NOT_IN_STASH');
       requireThat(stackable(item.template), 'NOT_STACKABLE');
       requireThat(quantity < item.quantity, 'INSUFFICIENT_QUANTITY');
+      this.reserveSlots(playerId, 1);
       const newItemId = randomUUID();
       this.run('UPDATE items SET quantity = quantity - ? WHERE id = ?', quantity, itemId);
       this.run('INSERT INTO items (id, template, location_id, quantity) VALUES (?, ?, ?, ?)', newItemId, item.template, locationId, quantity);
@@ -362,6 +367,7 @@ export class ExtractionCore {
       requireThat(this.row("SELECT id FROM locations WHERE id = ? AND kind = 'CONTAINER' AND raid_id = ?", containerId, raidId), 'WRONG_CONTAINER');
       requireThat(this.row('SELECT id FROM items WHERE id = ? AND location_id = ?', itemId, containerId), 'ITEM_UNAVAILABLE');
       requireThat(this.authority.canPickup?.({ playerId, raidId, containerId, itemId }) === true, 'PICKUP_NOT_AUTHORIZED');
+      this.reserveSlots(playerId, 1);
       this.run('UPDATE items SET location_id = ? WHERE id = ?', participant.inventory_id, itemId);
       return { itemId, inventoryId: participant.inventory_id };
     });
@@ -404,9 +410,9 @@ export class ExtractionCore {
     });
   }
   progression(playerId) {
-    const p = this.row('SELECT gold, xp, bargaining, workshop, archive FROM progression WHERE player_id=?', playerId);
+    const p = this.row('SELECT gold, xp, bargaining, workshop, archive, storage, alchemy, kitchen, scouting FROM progression WHERE player_id=?', playerId);
     requireThat(p, 'PLAYER_NOT_FOUND');
-    return { ...p, level: 1 + Math.floor(p.xp / 100), skillPoints: Math.floor(p.xp / 100) - p.bargaining,
+    return { ...p, capacity: this.storageState(playerId), level: 1 + Math.floor(p.xp / 100), skillPoints: Math.floor(p.xp / 100) - p.bargaining,
       contracts: this.rows('SELECT contract_id AS id, status, terms FROM player_contracts WHERE player_id=? ORDER BY contract_id', playerId)
         .map(c => ({ id: c.id, status: c.status, terms: JSON.parse(c.terms) })) };
   }
@@ -418,6 +424,7 @@ export class ExtractionCore {
       const p = this.progression(playerId), cost = Math.ceil(offer.buy * (100 - p.workshop * 5) / 100) * quantity;
       requireThat(p.gold >= cost, 'INSUFFICIENT_GOLD');
       requireThat(this.row('SELECT quantity FROM market_stock WHERE offer_id=?', offerId)?.quantity >= quantity, 'OUT_OF_STOCK');
+      this.reserveSlots(playerId, 1);
       this.run('UPDATE market_stock SET quantity=quantity-? WHERE offer_id=?', quantity, offerId);
       const itemId = randomUUID();
       this.run('UPDATE progression SET gold=gold-? WHERE player_id=?', cost, playerId);
@@ -479,7 +486,7 @@ export class ExtractionCore {
       const p = this.progression(playerId);
       requireThat(!p.contracts.some(c => c.id === contractId), 'CONTRACT_ALREADY_ACCEPTED');
       requireThat(p.archive >= definition.archive && (!definition.requires || p.contracts.some(c => c.id === definition.requires && c.status === 'COMPLETED')), 'CONTRACT_LOCKED');
-      const terms = { ...definition, version: ECONOMY.version, gold: Math.floor(definition.gold * (100 + p.bargaining * 5) / 100) };
+      const terms = { ...definition, version: ECONOMY.version, gold: Math.floor(definition.gold * (100 + p.bargaining * 5) / 100), xp: Math.floor(definition.xp * (100 + p.scouting * 10) / 100) };
       this.run("INSERT INTO player_contracts VALUES (?,?,'ACCEPTED',?)", playerId, contractId, JSON.stringify(terms));
       return { contractId, terms };
     });
@@ -508,6 +515,16 @@ export class ExtractionCore {
       this.run('UPDATE progression SET gold=gold+?, xp=xp+? WHERE player_id=?', terms.gold, terms.xp, playerId);
       return { contractId, gold: terms.gold, xp: terms.xp, delivered: terms.quantity };
     });
+  }
+  storageState(playerId) {
+    const p = this.row('SELECT capacity_floor+storage*50 AS slots FROM progression WHERE player_id=?', playerId);
+    requireThat(p, 'PLAYER_NOT_FOUND');
+    const used = this.row('SELECT COUNT(*) AS n FROM items i JOIN locations l ON l.id=i.location_id WHERE l.player_id=?', playerId).n;
+    return { used, limit: p.slots };
+  }
+  reserveSlots(playerId, additional) {
+    const capacity = this.storageState(playerId);
+    requireThat(capacity.used + additional <= capacity.limit, 'STORAGE_FULL');
   }
   market() {
     return { cycle: this.row('SELECT cycle FROM market_cycle WHERE id=1').cycle,
@@ -539,7 +556,8 @@ export class ExtractionCore {
       requireThat(recipe, 'UNKNOWN_RECIPE');
       const p = this.progression(playerId);
       requireThat(p[recipe.module] >= recipe.level, 'RECIPE_LOCKED');
-      const cost = recipe.gold * batches;
+      const feeReduction = recipe.output.template === 'healing_potion' ? p.alchemy : recipe.output.template === 'food_ration' ? p.kitchen : 0;
+      const cost = Math.max(0, recipe.gold - feeReduction) * batches;
       requireThat(p.gold >= cost, 'INSUFFICIENT_GOLD');
       const quantity = recipe.output.quantity * batches;
       requireThat(quantity <= MAX_STACK && (stackable(recipe.output.template) || batches === 1), 'INVALID_CRAFT');
@@ -554,6 +572,7 @@ export class ExtractionCore {
         let left = input.required;
         for (const item of input.items) { const count = Math.min(left, item.quantity); if (count) this.removeQuantity(item, count); left -= count; }
       }
+      this.reserveSlots(playerId, 1);
       this.run('UPDATE progression SET gold=gold-? WHERE player_id=?', cost, playerId);
       const itemId = randomUUID();
       this.run('INSERT INTO items(id,template,location_id,quantity) VALUES (?,?,?,?)', itemId, recipe.output.template, stash, quantity);

@@ -5,6 +5,7 @@ export interface ContractTerms { id: string; name: string; template: string; qua
 export interface Progression {
   gold: number; xp: number; level: number; skillPoints: number;
   bargaining: number; workshop: number; archive: number;
+  storage: number; alchemy: number; kitchen: number; scouting: number; capacity: { used: number; limit: number };
   contracts: { id: string; status: 'ACCEPTED' | 'COMPLETED'; terms: ContractTerms }[];
 }
 export interface PlayerState {
