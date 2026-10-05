@@ -1,4 +1,4 @@
-# Протокол 1 / схема базы 5
+# Протокол 1 / схема базы 6
 
 ## Доверие
 
@@ -43,3 +43,5 @@ SkyMpInventoryPort заменяет инвентари целиком и чит�
 С версии 0.5 projection и snapshot также содержат market: cycle и stock[{offerId,quantity}]. В предметах аварийного комплекта добавляется recovery:true; обычные предметы сохраняют прежнюю форму.
 
 Версия 0.6 добавляет progression.storage/alchemy/kitchen/scouting и capacity{used,limit}; операции upgrade/acceptContract сохраняют прежнюю форму.
+
+Версия 0.7: acceptMission/claimMission — подключённые операции; recordMissionEvent с worldApproved и advanceMissionCycle — системные. progression.missions содержит экземпляры, зафиксированные условия, confirmed/pending целей; progression.missionCycle — текущий цикл. Точные правила — MISSIONS.md.

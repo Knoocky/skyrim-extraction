@@ -124,3 +124,20 @@ test('HTTP crafting accepts recipe IDs only; stock reset remains server-only', a
   await command('restockMarket', { cycle: 1 }, 'server-restock');
   assert.equal((await client.snapshot(session.connectionId)).market.stock.find(s => s.offerId === 'herb').quantity, 100);
 });
+
+test('HTTP mission events require server authority and cannot be issued by a player connection', async t => {
+  const { command } = await fixture(t);
+  await command('registerPlayer', { playerId: 'alice' });
+  const { result: session } = await command('openConnection', { playerId: 'alice' });
+  const extra = { connectionId: session.connectionId };
+  const { result: mission } = await command('acceptMission', { definitionId: 'scout_ruins' }, 'accept', extra);
+  const { result: world } = await command('createWorld', { loot: [] });
+  const { result: exp } = await command('beginExpedition', { worldId: world.raidId, itemIds: [] }, 'in', extra);
+  const payload = { eventId: 'observation', worldId: world.raidId, kind: 'explore', target: 'ruins_gate', recipients: [{ playerId: 'alice', expeditionId: exp.expeditionId }] };
+  await rejected('INVALID_FIELDS', () => command('recordMissionEvent', payload, 'fake', { ...extra, worldApproved: true }));
+  await rejected('MISSION_EVENT_NOT_AUTHORIZED', () => command('recordMissionEvent', payload, 'not-approved'));
+  await command('recordMissionEvent', payload, 'approved', { worldApproved: true });
+  await command('extract', { worldId: world.raidId, expeditionId: exp.expeditionId, exitId: 'exit' }, 'out', { ...extra, worldApproved: true });
+  const claimed = await command('claimMission', { instanceId: mission.instanceId }, 'claim', extra);
+  assert.equal(claimed.result.gold, 20);
+});

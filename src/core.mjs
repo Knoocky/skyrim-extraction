@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { SESSION_SCHEMA } from './session-schema.mjs';
 import { ECONOMY, ECONOMY_SCHEMA } from './economy.mjs';
 import { ITEMS, RECIPES, validateContent } from './catalog.mjs';
+import { MISSIONS, MISSION_SCHEMA } from './missions.mjs';
 import { HUB_SCHEMA } from './hub-schema.mjs';
 import { craftingSchema } from './crafting-schema.mjs';
 validateContent(ECONOMY);
@@ -43,7 +44,7 @@ export class ExtractionCore {
         BEGIN IMMEDIATE;
       `);
       const version = this.row('PRAGMA user_version').user_version;
-      requireThat(version <= 5, 'UNSUPPORTED_SCHEMA');
+      requireThat(version <= 6, 'UNSUPPORTED_SCHEMA');
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS players (id TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS raids (
@@ -109,6 +110,9 @@ export class ExtractionCore {
       }
       if (version < 5) {
         this.db.exec(HUB_SCHEMA);
+      }
+      if (version < 6) {
+        this.db.exec(MISSION_SCHEMA);
         this.queueProjection();
       }
       requireThat(this.rows('PRAGMA foreign_key_check').length === 0, 'INVALID_DATABASE_REFERENCES');
@@ -380,6 +384,7 @@ export class ExtractionCore {
       this.run("INSERT INTO locations VALUES (?, 'CONTAINER', NULL, ?, NULL)", containerId, raidId);
       this.run('DELETE FROM items WHERE location_id=? AND recovery_owner IS NOT NULL', participant.inventory_id);
       this.run('UPDATE items SET location_id = ? WHERE location_id = ?', containerId, participant.inventory_id);
+      this.run('DELETE FROM mission_pending WHERE expedition_id=?', participant.id);
       this.run("UPDATE participants SET status = 'DEAD' WHERE id = ?", participant.id);
       return { playerId, raidId, status: 'DEAD', containerId, items: this.itemsAt(containerId) };
     });
@@ -394,6 +399,7 @@ export class ExtractionCore {
       this.run('UPDATE progression SET xp=xp+? WHERE player_id=?', fresh * 10, playerId);
       this.run('UPDATE loot_provenance SET extracted=1 WHERE item_id IN (SELECT id FROM items WHERE location_id=?)', participant.inventory_id);
       this.run('UPDATE items SET location_id = ? WHERE location_id = ?', this.stash(playerId), participant.inventory_id);
+      this.commitMissionProgress(participant.id);
       this.run("UPDATE participants SET status = 'EXTRACTED' WHERE id = ?", participant.id);
       return { playerId, raidId, status: 'EXTRACTED', items };
     });
@@ -405,6 +411,7 @@ export class ExtractionCore {
       requireThat(this.row("SELECT id FROM raids WHERE id = ? AND status = 'OPEN'", raidId), 'RAID_NOT_OPEN');
       const lost = this.run('DELETE FROM items WHERE location_id IN (SELECT id FROM locations WHERE raid_id = ?)', raidId).changes;
       this.run("UPDATE participants SET status = 'FORFEITED' WHERE raid_id = ? AND status = 'ACTIVE'", raidId);
+      this.run('DELETE FROM mission_pending WHERE expedition_id IN (SELECT id FROM participants WHERE raid_id=?)', raidId);
       this.run("UPDATE raids SET status = 'CLOSED' WHERE id = ?", raidId);
       return { raidId, status: 'CLOSED', lostItems: lost };
     });
@@ -412,7 +419,7 @@ export class ExtractionCore {
   progression(playerId) {
     const p = this.row('SELECT gold, xp, bargaining, workshop, archive, storage, alchemy, kitchen, scouting FROM progression WHERE player_id=?', playerId);
     requireThat(p, 'PLAYER_NOT_FOUND');
-    return { ...p, capacity: this.storageState(playerId), level: 1 + Math.floor(p.xp / 100), skillPoints: Math.floor(p.xp / 100) - p.bargaining,
+    return { ...p, missions: this.missions(playerId), missionCycle: this.row('SELECT cycle FROM mission_cycle WHERE id=1').cycle, capacity: this.storageState(playerId), level: 1 + Math.floor(p.xp / 100), skillPoints: Math.floor(p.xp / 100) - p.bargaining,
       contracts: this.rows('SELECT contract_id AS id, status, terms FROM player_contracts WHERE player_id=? ORDER BY contract_id', playerId)
         .map(c => ({ id: c.id, status: c.status, terms: JSON.parse(c.terms) })) };
   }
@@ -514,6 +521,98 @@ export class ExtractionCore {
       this.run("UPDATE player_contracts SET status='COMPLETED' WHERE player_id=? AND contract_id=?", playerId, contractId);
       this.run('UPDATE progression SET gold=gold+?, xp=xp+? WHERE player_id=?', terms.gold, terms.xp, playerId);
       return { contractId, gold: terms.gold, xp: terms.xp, delivered: terms.quantity };
+    });
+  }
+  missions(playerId) {
+    return this.rows('SELECT * FROM mission_instances WHERE player_id=? ORDER BY rowid', playerId).map(row => {
+      const terms = JSON.parse(row.terms);
+      const progress = terms.objectives.map((o, index) => {
+        const committed = this.row('SELECT count FROM mission_progress WHERE instance_id=? AND objective=?', row.id, index)?.count ?? 0;
+        const pending = this.row('SELECT COALESCE(SUM(count),0) AS n FROM mission_pending WHERE instance_id=? AND objective=?', row.id, index).n;
+        const count = o.kind === 'delivery' ? this.row(`SELECT COALESCE(SUM(i.quantity),0) AS n FROM items i JOIN locations l ON l.id=i.location_id WHERE l.kind='STASH' AND l.player_id=? AND i.template=? AND i.recovery_owner IS NULL`, playerId, o.target).n : committed;
+        return { confirmed: Math.min(o.quantity, count), pending: Math.min(o.quantity - Math.min(o.quantity, count), pending) };
+      });
+      return { id: row.id, definitionId: row.definition_id, cycle: row.cycle, status: row.status, terms, progress };
+    });
+  }
+  acceptMission(requestId, playerId, definitionId) {
+    requireThat(validId(definitionId), 'INVALID_MISSION');
+    return this.command('player:' + playerId, requestId, 'acceptMission', { playerId, definitionId }, () => {
+      this.editableStash(playerId);
+      const definition = MISSIONS.find(m => m.id === definitionId);
+      requireThat(definition, 'UNKNOWN_MISSION');
+      const history = this.missions(playerId), current = this.row('SELECT cycle FROM mission_cycle WHERE id=1').cycle;
+      requireThat(!history.some(m => m.definitionId === definitionId && (m.status === 'ACCEPTED' || !definition.repeatable || m.cycle === current)), 'MISSION_ALREADY_TAKEN');
+      requireThat(!definition.requires || history.some(m => m.definitionId === definition.requires && m.status === 'COMPLETED'), 'MISSION_LOCKED');
+      const p = this.progression(playerId), id = randomUUID();
+      const terms = { ...definition, version: 1, gold: Math.floor(definition.gold * (100 + p.bargaining * 5) / 100), xp: Math.floor(definition.xp * (100 + p.scouting * 10) / 100) };
+      this.run("INSERT INTO mission_instances VALUES (?,?,?,?,'ACCEPTED',?)", id, playerId, definitionId, definition.repeatable ? current : 0, JSON.stringify(terms));
+      return { instanceId: id, terms };
+    });
+  }
+  advanceMissionCycle(requestId, cycle) {
+    requireThat(Number.isSafeInteger(cycle) && cycle > 1, 'INVALID_MISSION_CYCLE');
+    return this.command('system', requestId, 'advanceMissionCycle', { cycle }, () => {
+      requireThat(cycle > this.row('SELECT cycle FROM mission_cycle WHERE id=1').cycle, 'STALE_MISSION_CYCLE');
+      this.run('UPDATE mission_cycle SET cycle=? WHERE id=1', cycle);
+      return { cycle };
+    });
+  }
+  recordMissionEvent(requestId, eventId, worldId, kind, target, recipients) {
+    requireThat([eventId, worldId, target].every(validId) && ['explore','kill','rescue'].includes(kind), 'INVALID_MISSION_EVENT');
+    requireThat(Array.isArray(recipients) && recipients.length > 0 && recipients.length <= 4
+      && recipients.every(r => r && typeof r === 'object' && Object.keys(r).length === 2 && validId(r.playerId) && validId(r.expeditionId))
+      && new Set(recipients.map(r => r.playerId)).size === recipients.length, 'INVALID_RECIPIENTS');
+    const payload = { eventId, worldId, kind, target, recipients: [...recipients].sort((a,b) => a.playerId < b.playerId ? -1 : a.playerId > b.playerId ? 1 : 0) };
+    return this.command('system', requestId, 'recordMissionEvent', payload, () => {
+      const previous = this.row('SELECT payload,result FROM mission_events WHERE world_id=? AND event_id=?', worldId, eventId);
+      if (previous) {
+        requireThat(previous.payload === canonical(payload), 'EVENT_ID_REUSED');
+        return JSON.parse(previous.result);
+      }
+      // Validate every participant before recording anything: a group event is all-or-nothing.
+      for (const r of payload.recipients) this.active(r.playerId, worldId, r.expeditionId);
+      let credited = 0;
+      for (const r of payload.recipients) for (const mission of this.missions(r.playerId).filter(m => m.status === 'ACCEPTED')) {
+        mission.terms.objectives.forEach((objective, index) => {
+          if (objective.kind !== kind || objective.target !== target) return;
+          const remaining = objective.quantity - mission.progress[index].confirmed - mission.progress[index].pending;
+          if (remaining <= 0) return;
+          this.run(`INSERT INTO mission_pending VALUES (?,?,?,1) ON CONFLICT(instance_id,expedition_id,objective) DO UPDATE SET count=count+1`, mission.id, r.expeditionId, index);
+          credited++;
+        });
+      }
+      const result = { eventId, credited };
+      this.run('INSERT INTO mission_events VALUES (?,?,?,?)', worldId, eventId, canonical(payload), JSON.stringify(result));
+      return result;
+    });
+  }
+  commitMissionProgress(expeditionId) {
+    const rows = this.rows('SELECT * FROM mission_pending WHERE expedition_id=?', expeditionId);
+    for (const row of rows) {
+      const mission = this.row('SELECT terms,status FROM mission_instances WHERE id=?', row.instance_id);
+      if (mission.status !== 'ACCEPTED') continue;
+      const cap = JSON.parse(mission.terms).objectives[row.objective].quantity;
+      this.run(`INSERT INTO mission_progress VALUES (?,?,?) ON CONFLICT(instance_id,objective) DO UPDATE SET count=MIN(?,count+excluded.count)`, row.instance_id, row.objective, Math.min(cap,row.count), cap);
+    }
+    this.run('DELETE FROM mission_pending WHERE expedition_id=?', expeditionId);
+  }
+  claimMission(requestId, playerId, instanceId) {
+    requireThat(validId(instanceId), 'INVALID_MISSION');
+    return this.command('player:' + playerId, requestId, 'claimMission', { playerId, instanceId }, () => {
+      const stash = this.editableStash(playerId), mission = this.missions(playerId).find(m => m.id === instanceId);
+      requireThat(mission?.status === 'ACCEPTED', 'MISSION_NOT_ACTIVE');
+      requireThat(mission.terms.objectives.every((o,i) => mission.progress[i].confirmed >= o.quantity), 'MISSION_NOT_READY');
+      for (const o of mission.terms.objectives.filter(o => o.kind === 'delivery')) {
+        let left = o.quantity;
+        for (const item of this.rows('SELECT * FROM items WHERE location_id=? AND template=? AND recovery_owner IS NULL ORDER BY id', stash, o.target)) {
+          const count = Math.min(left, item.quantity); if (count) this.removeQuantity(item, count); left -= count;
+        }
+        requireThat(left === 0, 'INSUFFICIENT_ITEMS');
+      }
+      this.run("UPDATE mission_instances SET status='COMPLETED' WHERE id=?", instanceId);
+      this.run('UPDATE progression SET gold=gold+?,xp=xp+? WHERE player_id=?', mission.terms.gold, mission.terms.xp, playerId);
+      return { instanceId, gold: mission.terms.gold, xp: mission.terms.xp };
     });
   }
   storageState(playerId) {

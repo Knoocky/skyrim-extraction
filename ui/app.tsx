@@ -83,7 +83,7 @@ function App() {
         {state?.containers.map((container, index) => <div className="container" key={container.id}><h3>Контейнер {index + 1}</h3><ul>{container.items.map(item => itemRow(item, <button disabled={locked || !active} onClick={() => void act('pickup', { ...context, containerId: container.id, itemId: item.id })}>Забрать</button>))}</ul>{container.items.length === 0 && <p className="empty">Пусто</p>}</div>)}
       </section>
     </div>
-    {state && <EconomyPanel player={state.player} market={state.market} busy={locked} act={act}/> }
+    {state && <EconomyPanel player={state.player} market={state.market} demo={demo} busy={locked} act={act}/> }
     <footer>{demo ? 'После остановки стенда временная база удаляется. Это не игровой релиз.' : 'Действия подтверждает сервер. При потере связи дождись восстановления.'}</footer>
   </main>;
 }

@@ -2,7 +2,10 @@ import type { Command } from './protocol.ts';
 
 export interface Item { id: string; template: string; quantity: number; recovery?: boolean }
 export interface ContractTerms { id: string; name: string; template: string; quantity: number; gold: number; xp: number; version: number }
+export interface MissionTerms { id: string; name: string; objectives: { kind: string; target: string; quantity: number }[]; gold: number; xp: number; repeatable: boolean }
+export interface Mission { id: string; definitionId: string; cycle: number; status: 'ACCEPTED' | 'COMPLETED'; terms: MissionTerms; progress: { confirmed: number; pending: number }[] }
 export interface Progression {
+  missions: Mission[]; missionCycle: number;
   gold: number; xp: number; level: number; skillPoints: number;
   bargaining: number; workshop: number; archive: number;
   storage: number; alchemy: number; kitchen: number; scouting: number; capacity: { used: number; limit: number };

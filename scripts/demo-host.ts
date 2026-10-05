@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { once } from 'node:events';
 import { randomBytes } from 'node:crypto';
+import { MISSIONS } from '../src/missions.mjs';
 import { ExtractionCore } from '../src/core.mjs';
 import { createCoreServer } from '../src/server.ts';
 import { CoreClient, RemoteError } from '../src/client.ts';
@@ -34,7 +35,7 @@ export async function createDemoHost() {
     sessions.set(playerId, result.connectionId);
   }
   const { result: world } = await bridge.execute<{ raidId: string }>({ protocolVersion: 1, operation: 'createWorld', requestId: 'world', payload: { loot: ['silver_ring', 'dwemer_relic', { template: 'healing_potion', quantity: 5 }, { template: 'mountain_herb', quantity: 8 }, { template: 'iron_ingot', quantity: 4 }, { template: 'leather', quantity: 2 }, { template: 'raw_meat', quantity: 4 }] } });
-  const allowed = new Set(['beginExpedition', 'pickup', 'consume', 'extract', 'splitStack', 'mergeStacks', 'recoveryKit', 'craft', 'buy', 'sell', 'upgrade', 'learnSkill', 'acceptContract', 'turnInContract', 'demoDeath']);
+  const allowed = new Set(['beginExpedition', 'pickup', 'consume', 'extract', 'splitStack', 'mergeStacks', 'acceptMission', 'claimMission', 'recoveryKit', 'craft', 'buy', 'sell', 'upgrade', 'learnSkill', 'acceptContract', 'turnInContract', 'demoDeath', 'demoMissionEvent']);
   const assets: Record<string, [string, string]> = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/app.css': ['app.css', 'text/css'] };
   const server = createServer(async (request, response) => {
     const reply = (status: number, value: unknown) => { response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); response.end(JSON.stringify(value)); };
@@ -57,6 +58,15 @@ export async function createDemoHost() {
         if (!sessions.has(actor) || !allowed.has(operation)) return reply(400, { error: 'INVALID_DEMO_INTENT' });
         const command: Command = { protocolVersion: 1, requestId: id(input.requestId), operation, payload, connectionId: sessions.get(actor)! };
         if (['pickup', 'consume', 'extract'].includes(operation)) command.worldApproved = true; // Simulation ONLY.
+        if (operation === 'demoMissionEvent') {
+          keys(payload, ['kind', 'target']);
+          if (!MISSIONS.some(m => m.objectives.some(o => o.kind !== 'delivery' && o.kind === payload.kind && o.target === payload.target))) throw new Error('INVALID_DEMO_OBJECTIVE');
+          const current = await client.snapshot(sessions.get(actor)!);
+          if (!current.active) throw new Error('NOT_ACTIVE');
+          command.operation = 'recordMissionEvent';
+          command.payload = { eventId: 'demo-' + command.requestId, worldId: current.active.worldId, kind: payload.kind, target: payload.target, recipients: [{ playerId: actor, expeditionId: current.active.expeditionId }] };
+          delete command.connectionId; command.worldApproved = true; // Demo-only event source.
+        }
         if (operation === 'demoDeath') { command.operation = 'recordDeath'; command.payload = { ...payload, playerId: actor }; delete command.connectionId; command.worldApproved = true; }
         return reply(200, await bridge.execute(command));
       }

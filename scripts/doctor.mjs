@@ -7,7 +7,7 @@ try {
   const schema = db.prepare('PRAGMA user_version').get().user_version;
   const integrity = db.prepare('PRAGMA quick_check').get().quick_check === 'ok';
   const foreignKeys = db.prepare('PRAGMA foreign_key_check').all().length === 0;
-  const supported = schema === 5;
+  const supported = schema === 6;
   const state = supported ? db.prepare('SELECT revision, acknowledged FROM projection_state WHERE id=1').get() : null;
   const counts = supported ? {
     players: db.prepare('SELECT COUNT(*) AS n FROM players').get().n,

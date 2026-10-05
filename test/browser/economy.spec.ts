@@ -69,3 +69,21 @@ test('materials can be crafted through UI and bankruptcy recovery cannot be sold
   await expect(traders.getByRole('button', { name: 'Продать 1' })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Получить аварийный меч' })).toBeDisabled();
 });
+
+test('demo mission event remains provisional until extraction and reward claim', async ({ page, request }) => {
+  await page.goto('/?demo=1');
+  await page.getByRole('combobox').selectOption('bob');
+  const before = await (await request.get('/api/state?player=bob')).json();
+  const mission = page.locator('article').filter({ has: page.getByRole('heading', { name: 'Разведка руин', exact: true }) });
+  await mission.getByRole('button', { name: 'Взять задание' }).click();
+  await expect(mission.getByRole('button', { name: 'Получить награду' })).toBeDisabled();
+  await page.getByRole('button', { name: /Выйти в экспедицию/ }).click();
+  await mission.getByRole('button', { name: 'Имитировать событие задания' }).click();
+  await expect(mission.getByText(/до выхода/)).toBeVisible();
+  await expect(mission.getByRole('button', { name: 'Получить награду' })).toBeDisabled();
+  await page.getByRole('button', { name: 'Имитировать выход' }).click();
+  await mission.getByRole('button', { name: 'Получить награду' }).click();
+  await expect(mission.getByText('Выполнен', { exact: true })).toBeVisible();
+  const after = await (await request.get('/api/state?player=bob')).json();
+  expect(after.player.progression.gold).toBe(before.player.progression.gold + 20);
+});

@@ -29,6 +29,8 @@ export interface Command {
   worldApproved?: boolean;
 }
 const fields: Record<string, string[]> = {
+  acceptMission: ['definitionId'], claimMission: ['instanceId'], advanceMissionCycle: ['cycle'],
+  recordMissionEvent: ['eventId', 'worldId', 'kind', 'target', 'recipients'],
   recoveryKit: [], craft: ['recipeId', 'batches'], restockMarket: ['cycle'],
   registerPlayer: ['playerId'], createWorld: ['loot'], openConnection: ['playerId'],
   closeConnection: ['connectionId'], closeWorld: ['worldId'],
@@ -42,8 +44,8 @@ const fields: Record<string, string[]> = {
   acceptContract: ['contractId'], turnInContract: ['contractId', 'itemIds'],
   splitStack: ['itemId', 'quantity'], mergeStacks: ['sourceId', 'targetId']
 };
-const connected = new Set(['beginExpedition', 'pickup', 'consume', 'extract', 'splitStack', 'mergeStacks', 'recoveryKit', 'craft', 'buy', 'sell', 'upgrade', 'learnSkill', 'acceptContract', 'turnInContract']);
-const needsApproval = new Set(['pickup', 'consume', 'extract', 'recordDeath']);
+const connected = new Set(['beginExpedition', 'pickup', 'consume', 'extract', 'splitStack', 'mergeStacks', 'acceptMission', 'claimMission', 'recoveryKit', 'craft', 'buy', 'sell', 'upgrade', 'learnSkill', 'acceptContract', 'turnInContract']);
+const needsApproval = new Set(['pickup', 'consume', 'extract', 'recordDeath', 'recordMissionEvent']);
 
 export function decodeCommand(raw: unknown): Command {
   const input = object(raw);
@@ -78,6 +80,8 @@ export function dispatch(core: ExtractionCore, command: Command): unknown {
   try {
     if (connected.has(op)) return core.executeConnected(command.connectionId!, (playerId: string) => {
       switch (op) {
+        case 'acceptMission': return core.acceptMission(r, playerId, p.definitionId);
+        case 'claimMission': return core.claimMission(r, playerId, p.instanceId);
         case 'recoveryKit': return core.recoveryKit(r, playerId);
         case 'craft': return core.craft(r, playerId, p.recipeId, p.batches);
         case 'buy': return core.buy(r, playerId, p.offerId, p.quantity);
@@ -95,6 +99,10 @@ export function dispatch(core: ExtractionCore, command: Command): unknown {
       }
     });
     switch (op) {
+      case 'advanceMissionCycle': return core.advanceMissionCycle(r, p.cycle);
+      case 'recordMissionEvent':
+        if (command.worldApproved !== true) throw new DomainError('MISSION_EVENT_NOT_AUTHORIZED');
+        return core.recordMissionEvent(r, p.eventId, p.worldId, p.kind, p.target, p.recipients);
       case 'restockMarket': return core.restockMarket(r, p.cycle);
       case 'registerPlayer': return core.registerPlayer(r, p.playerId);
       case 'createWorld': return core.createRaid(r, p.loot as string[]);
