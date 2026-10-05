@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { SESSION_SCHEMA } from './session-schema.mjs';
+import { ECONOMY, ECONOMY_SCHEMA } from './economy.mjs';
 
 export class DomainError extends Error {
   constructor(code) { super(code); this.name = 'DomainError'; this.code = code; }
@@ -38,7 +39,7 @@ export class ExtractionCore {
         BEGIN IMMEDIATE;
       `);
       const version = this.row('PRAGMA user_version').user_version;
-      requireThat(version <= 2, 'UNSUPPORTED_SCHEMA');
+      requireThat(version <= 3, 'UNSUPPORTED_SCHEMA');
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS players (id TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS raids (
@@ -94,6 +95,9 @@ export class ExtractionCore {
       if (version < 2) {
         this.db.exec(SESSION_SCHEMA);
         this.run('INSERT INTO projection_state VALUES (1, ?, 0, 0)', randomUUID());
+      }
+      if (version < 3) {
+        this.db.exec(ECONOMY_SCHEMA);
         this.queueProjection();
       }
       requireThat(this.rows('PRAGMA foreign_key_check').length === 0, 'INVALID_DATABASE_REFERENCES');
@@ -125,7 +129,7 @@ export class ExtractionCore {
   readSnapshot(playerId) {
     const stash = this.itemsAt(this.stash(playerId));
     const active = this.row("SELECT * FROM participants WHERE player_id = ? AND status = 'ACTIVE'", playerId);
-    return { playerId, stash, active: active ? {
+    return { playerId, stash, progression: this.progression(playerId), active: active ? {
       raidId: active.raid_id, worldId: active.raid_id,
       participantId: active.id, expeditionId: active.id,
       items: this.itemsAt(this.row('SELECT id FROM locations WHERE participant_id = ?', active.id).id)
@@ -233,6 +237,7 @@ export class ExtractionCore {
     return this.command('system', requestId, 'registerPlayer', { playerId }, () => {
       requireThat(!this.row('SELECT id FROM players WHERE id = ?', playerId), 'PLAYER_EXISTS');
       this.run('INSERT INTO players VALUES (?)', playerId);
+      this.run('INSERT INTO progression(player_id) VALUES (?)', playerId);
       const stashId = randomUUID();
       this.run("INSERT INTO locations VALUES (?, 'STASH', ?, NULL, NULL)", stashId, playerId);
       for (const template of ['iron_sword', 'hunting_bow', 'healing_potion']) {
@@ -257,7 +262,9 @@ export class ExtractionCore {
       this.run("INSERT INTO locations VALUES (?, 'CONTAINER', NULL, ?, NULL)", containerId, raidId);
       for (const entry of templates) {
         const { template, quantity } = typeof entry === 'string' ? { template: entry, quantity: 1 } : entry;
-        this.run('INSERT INTO items (id, template, location_id, quantity) VALUES (?, ?, ?, ?)', randomUUID(), template, containerId, quantity);
+        const itemId = randomUUID();
+        this.run('INSERT INTO items (id, template, location_id, quantity) VALUES (?, ?, ?, ?)', itemId, template, containerId, quantity);
+        this.run('INSERT INTO loot_provenance(item_id) VALUES (?)', itemId);
       }
       return { raidId, containerId, items: this.itemsAt(containerId) };
     });
@@ -368,6 +375,9 @@ export class ExtractionCore {
       const participant = this.active(playerId, raidId, expeditionId);
       requireThat(this.authority.canExtract?.({ playerId, raidId, exitId }) === true, 'EXTRACTION_NOT_AUTHORIZED');
       const items = this.itemsAt(participant.inventory_id);
+      const fresh = this.row(`SELECT COALESCE(SUM(i.quantity),0) AS quantity FROM items i JOIN loot_provenance p ON p.item_id=i.id WHERE i.location_id=? AND p.extracted=0`, participant.inventory_id).quantity;
+      this.run('UPDATE progression SET xp=xp+? WHERE player_id=?', fresh * 10, playerId);
+      this.run('UPDATE loot_provenance SET extracted=1 WHERE item_id IN (SELECT id FROM items WHERE location_id=?)', participant.inventory_id);
       this.run('UPDATE items SET location_id = ? WHERE location_id = ?', this.stash(playerId), participant.inventory_id);
       this.run("UPDATE participants SET status = 'EXTRACTED' WHERE id = ?", participant.id);
       return { playerId, raidId, status: 'EXTRACTED', items };
@@ -382,6 +392,109 @@ export class ExtractionCore {
       this.run("UPDATE participants SET status = 'FORFEITED' WHERE raid_id = ? AND status = 'ACTIVE'", raidId);
       this.run("UPDATE raids SET status = 'CLOSED' WHERE id = ?", raidId);
       return { raidId, status: 'CLOSED', lostItems: lost };
+    });
+  }
+  progression(playerId) {
+    const p = this.row('SELECT gold, xp, bargaining, workshop, archive FROM progression WHERE player_id=?', playerId);
+    requireThat(p, 'PLAYER_NOT_FOUND');
+    return { ...p, level: 1 + Math.floor(p.xp / 100), skillPoints: Math.floor(p.xp / 100) - p.bargaining,
+      contracts: this.rows('SELECT contract_id AS id, status, terms FROM player_contracts WHERE player_id=? ORDER BY contract_id', playerId)
+        .map(c => ({ id: c.id, status: c.status, terms: JSON.parse(c.terms) })) };
+  }
+  buy(requestId, playerId, offerId, quantity) {
+    requireThat(validId(offerId) && validQuantity(quantity), 'INVALID_PURCHASE');
+    return this.command('player:' + playerId, requestId, 'buy', { playerId, offerId, quantity }, () => {
+      const stash = this.editableStash(playerId), offer = ECONOMY.offers.find(o => o.id === offerId);
+      requireThat(offer && (stackable(offer.template) || quantity === 1), 'INVALID_PURCHASE');
+      const p = this.progression(playerId), cost = Math.ceil(offer.buy * (100 - p.workshop * 5) / 100) * quantity;
+      requireThat(p.gold >= cost, 'INSUFFICIENT_GOLD');
+      const itemId = randomUUID();
+      this.run('UPDATE progression SET gold=gold-? WHERE player_id=?', cost, playerId);
+      this.run('INSERT INTO items(id,template,location_id,quantity) VALUES (?,?,?,?)', itemId, offer.template, stash, quantity);
+      return { itemId, quantity, cost };
+    });
+  }
+  sell(requestId, playerId, itemId, quantity) {
+    requireThat(validId(itemId) && validQuantity(quantity), 'INVALID_SALE');
+    return this.command('player:' + playerId, requestId, 'sell', { playerId, itemId, quantity }, () => {
+      const stash = this.editableStash(playerId);
+      const item = this.row('SELECT * FROM items WHERE id=? AND location_id=?', itemId, stash);
+      requireThat(item && item.quantity >= quantity, 'ITEM_NOT_IN_STASH');
+      const offer = ECONOMY.offers.find(o => o.template === item.template);
+      requireThat(offer, 'NOT_TRADABLE');
+      const earned = offer.sell * quantity;
+      this.removeQuantity(item, quantity);
+      this.run('UPDATE progression SET gold=gold+? WHERE player_id=?', earned, playerId);
+      return { itemId, sold: quantity, earned };
+    });
+  }
+  removeQuantity(item, quantity) {
+    if (quantity === item.quantity) this.run('DELETE FROM items WHERE id=?', item.id);
+    else this.run('UPDATE items SET quantity=quantity-? WHERE id=?', quantity, item.id);
+  }
+  upgrade(requestId, playerId, moduleId, expectedLevel) {
+    requireThat(validId(moduleId) && Number.isSafeInteger(expectedLevel) && expectedLevel >= 0, 'INVALID_UPGRADE');
+    return this.command('player:' + playerId, requestId, 'upgrade', { playerId, moduleId, expectedLevel }, () => {
+      this.editableStash(playerId);
+      const module = ECONOMY.modules.find(m => m.id === moduleId);
+      requireThat(module, 'UNKNOWN_MODULE');
+      const p = this.progression(playerId), level = p[moduleId], cost = module.costs[level];
+      requireThat(level === expectedLevel, 'STALE_LEVEL');
+      requireThat(cost !== undefined, 'MAX_LEVEL');
+      requireThat(p.gold >= cost, 'INSUFFICIENT_GOLD');
+      // Column name comes exclusively from the immutable module allowlist.
+      this.run(`UPDATE progression SET gold=gold-?, ${moduleId}=${moduleId}+1 WHERE player_id=?`, cost, playerId);
+      return { moduleId, level: level + 1, cost };
+    });
+  }
+  learnSkill(requestId, playerId, skillId, expectedRank) {
+    requireThat(skillId === 'bargaining' && Number.isSafeInteger(expectedRank), 'INVALID_SKILL');
+    return this.command('player:' + playerId, requestId, 'learnSkill', { playerId, skillId, expectedRank }, () => {
+      this.editableStash(playerId);
+      const p = this.progression(playerId);
+      requireThat(p.bargaining === expectedRank, 'STALE_RANK');
+      requireThat(p.bargaining < 3 && p.skillPoints > 0, 'SKILL_UNAVAILABLE');
+      this.run('UPDATE progression SET bargaining=bargaining+1 WHERE player_id=?', playerId);
+      return { skillId, rank: p.bargaining + 1 };
+    });
+  }
+  acceptContract(requestId, playerId, contractId) {
+    requireThat(validId(contractId), 'INVALID_CONTRACT');
+    return this.command('player:' + playerId, requestId, 'acceptContract', { playerId, contractId }, () => {
+      this.editableStash(playerId);
+      const definition = ECONOMY.contracts.find(c => c.id === contractId);
+      requireThat(definition, 'UNKNOWN_CONTRACT');
+      const p = this.progression(playerId);
+      requireThat(!p.contracts.some(c => c.id === contractId), 'CONTRACT_ALREADY_ACCEPTED');
+      requireThat(p.archive >= definition.archive && (!definition.requires || p.contracts.some(c => c.id === definition.requires && c.status === 'COMPLETED')), 'CONTRACT_LOCKED');
+      const terms = { ...definition, version: ECONOMY.version, gold: Math.floor(definition.gold * (100 + p.bargaining * 5) / 100) };
+      this.run("INSERT INTO player_contracts VALUES (?,?,'ACCEPTED',?)", playerId, contractId, JSON.stringify(terms));
+      return { contractId, terms };
+    });
+  }
+  turnInContract(requestId, playerId, contractId, itemIds) {
+    requireThat(validId(contractId) && Array.isArray(itemIds) && itemIds.length > 0 && itemIds.length <= 100
+      && itemIds.every(validId) && new Set(itemIds).size === itemIds.length, 'INVALID_TURN_IN');
+    return this.command('player:' + playerId, requestId, 'turnInContract', { playerId, contractId, itemIds }, () => {
+      const stash = this.editableStash(playerId);
+      const contract = this.row('SELECT * FROM player_contracts WHERE player_id=? AND contract_id=?', playerId, contractId);
+      requireThat(contract?.status === 'ACCEPTED', 'CONTRACT_NOT_ACTIVE');
+      const terms = JSON.parse(contract.terms);
+      const items = [...itemIds].sort().map(id => {
+        const item = this.row('SELECT * FROM items WHERE id=? AND location_id=?', id, stash);
+        requireThat(item && item.template === terms.template, 'INVALID_CONTRACT_ITEM');
+        return item;
+      });
+      requireThat(items.reduce((sum, item) => sum + item.quantity, 0) >= terms.quantity, 'INSUFFICIENT_ITEMS');
+      let remaining = terms.quantity;
+      for (const item of items) {
+        const count = Math.min(remaining, item.quantity);
+        if (count) this.removeQuantity(item, count);
+        remaining -= count;
+      }
+      this.run("UPDATE player_contracts SET status='COMPLETED' WHERE player_id=? AND contract_id=?", playerId, contractId);
+      this.run('UPDATE progression SET gold=gold+?, xp=xp+? WHERE player_id=?', terms.gold, terms.xp, playerId);
+      return { contractId, gold: terms.gold, xp: terms.xp, delivered: terms.quantity };
     });
   }
   // Consistent reconnect snapshot. Adapter may project this into the game inventory.

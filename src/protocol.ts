@@ -36,9 +36,12 @@ const fields: Record<string, string[]> = {
   pickup: ['worldId', 'expeditionId', 'containerId', 'itemId'],
   consume: ['worldId', 'expeditionId', 'itemId', 'quantity'],
   extract: ['worldId', 'expeditionId', 'exitId'],
+  buy: ['offerId', 'quantity'], sell: ['itemId', 'quantity'],
+  upgrade: ['moduleId', 'expectedLevel'], learnSkill: ['skillId', 'expectedRank'],
+  acceptContract: ['contractId'], turnInContract: ['contractId', 'itemIds'],
   splitStack: ['itemId', 'quantity'], mergeStacks: ['sourceId', 'targetId']
 };
-const connected = new Set(['beginExpedition', 'pickup', 'consume', 'extract', 'splitStack', 'mergeStacks']);
+const connected = new Set(['beginExpedition', 'pickup', 'consume', 'extract', 'splitStack', 'mergeStacks', 'buy', 'sell', 'upgrade', 'learnSkill', 'acceptContract', 'turnInContract']);
 const needsApproval = new Set(['pickup', 'consume', 'extract', 'recordDeath']);
 
 export function decodeCommand(raw: unknown): Command {
@@ -51,9 +54,9 @@ export function decodeCommand(raw: unknown): Command {
   keys(payload, fields[operation]);
   for (const name of fields[operation]) {
     if (name.endsWith('Id')) id(payload[name]);
-    if (name === 'quantity') integer(payload[name]);
+    if (['quantity', 'expectedLevel', 'expectedRank'].includes(name)) integer(payload[name]);
   }
-  if (operation === 'beginExpedition' && (!Array.isArray(payload.itemIds) || payload.itemIds.length > 100 || !payload.itemIds.every(x => { id(x); return true; }))) {
+  if (['beginExpedition', 'turnInContract'].includes(operation) && (!Array.isArray(payload.itemIds) || payload.itemIds.length > 100 || !payload.itemIds.every(x => { id(x); return true; }))) {
     throw new DomainError('INVALID_LOADOUT');
   }
   if (connected.has(operation)) id(input.connectionId);
@@ -74,6 +77,12 @@ export function dispatch(core: ExtractionCore, command: Command): unknown {
   try {
     if (connected.has(op)) return core.executeConnected(command.connectionId!, (playerId: string) => {
       switch (op) {
+        case 'buy': return core.buy(r, playerId, p.offerId, p.quantity);
+        case 'sell': return core.sell(r, playerId, p.itemId, p.quantity);
+        case 'upgrade': return core.upgrade(r, playerId, p.moduleId, p.expectedLevel);
+        case 'learnSkill': return core.learnSkill(r, playerId, p.skillId, p.expectedRank);
+        case 'acceptContract': return core.acceptContract(r, playerId, p.contractId);
+        case 'turnInContract': return core.turnInContract(r, playerId, p.contractId, p.itemIds);
         case 'beginExpedition': return core.beginExpedition(r, playerId, p.worldId, p.itemIds);
         case 'pickup': return core.pickup(r, playerId, p.worldId, p.containerId, p.itemId, p.expeditionId);
         case 'consume': return core.consume(r, playerId, p.worldId, p.itemId, p.quantity as number, p.expeditionId);

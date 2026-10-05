@@ -6,7 +6,7 @@ import { once } from 'node:events';
 import { randomBytes } from 'node:crypto';
 import { ExtractionCore } from '../src/core.mjs';
 import { createCoreServer } from '../src/server.ts';
-import { CoreClient } from '../src/client.ts';
+import { CoreClient, RemoteError } from '../src/client.ts';
 import { ProjectionBridge } from '../src/bridge.ts';
 import { SimulatedProjector } from '../src/projector.ts';
 import { object, keys, id, type Command } from '../src/protocol.ts';
@@ -34,7 +34,7 @@ export async function createDemoHost() {
     sessions.set(playerId, result.connectionId);
   }
   const { result: world } = await bridge.execute<{ raidId: string }>({ protocolVersion: 1, operation: 'createWorld', requestId: 'world', payload: { loot: ['silver_ring', 'dwemer_relic', { template: 'healing_potion', quantity: 5 }] } });
-  const allowed = new Set(['beginExpedition', 'pickup', 'consume', 'extract', 'splitStack', 'mergeStacks', 'demoDeath']);
+  const allowed = new Set(['beginExpedition', 'pickup', 'consume', 'extract', 'splitStack', 'mergeStacks', 'buy', 'sell', 'upgrade', 'learnSkill', 'acceptContract', 'turnInContract', 'demoDeath']);
   const assets: Record<string, [string, string]> = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/app.css': ['app.css', 'text/css'] };
   const server = createServer(async (request, response) => {
     const reply = (status: number, value: unknown) => { response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); response.end(JSON.stringify(value)); };
@@ -66,7 +66,7 @@ export async function createDemoHost() {
         response.writeHead(200, { 'content-type': asset[1], 'cache-control': 'no-store' }); return response.end(contents);
       }
       reply(404, { error: 'NOT_FOUND' });
-    } catch (error) { reply(409, { error: error instanceof Error ? error.message : 'DEMO_ERROR' }); }
+    } catch (error) { reply(error instanceof RemoteError && error.commandRejected ? 409 : 500, { error: error instanceof Error ? error.message : 'DEMO_ERROR' }); }
   });
   server.requestTimeout = 5000; server.headersTimeout = 5000;
   return {

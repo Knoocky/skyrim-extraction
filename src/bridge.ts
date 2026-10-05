@@ -1,4 +1,4 @@
-import { CoreClient, type Projection } from './client.ts';
+import { CoreClient, RemoteError, type Projection } from './client.ts';
 import type { Command } from './protocol.ts';
 
 export interface WorldProjectionPort {
@@ -36,7 +36,10 @@ export class ProjectionBridge {
     return this.#serialize(async () => {
       await this.port.freeze();
       await this.#synchronize();
-      const result = await this.client.command<T>(command);
+      const result = await this.client.command<T>(command).catch(error => {
+        if (error instanceof RemoteError && error.status >= 400 && error.status < 500) error.commandRejected = true;
+        throw error;
+      });
       await this.#synchronize();
       await this.port.resume();
       return result;

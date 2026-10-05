@@ -23,3 +23,9 @@ jobs:
       - run: npm run build
       - run: npm test
       - run: npm run demo
+      - name: Install test browser
+        if: runner.os == 'Linux'
+        run: npx playwright install --with-deps chromium
+      - name: Browser economy and retry test
+        if: runner.os == 'Linux'
+        run: npm run test:browser

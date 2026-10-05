@@ -89,3 +89,21 @@ test('HTTP stale death from a previous expedition cannot affect the next one', a
   await rejected('STALE_EXPEDITION', () => command('recordDeath', { playerId: 'alice', worldId: world.raidId, expeditionId: first.expeditionId }, 'late', { worldApproved: true }));
   assert.equal((await client.snapshot(session.connectionId)).active.expeditionId, next.expeditionId);
 });
+
+test('HTTP economy rejects client prices and foreign identity; current connection can trade and accept contracts', async t => {
+  const { command, client } = await fixture(t);
+  await command('registerPlayer', { playerId: 'alice' });
+  const { result: session } = await command('openConnection', { playerId: 'alice' });
+  const extra = { connectionId: session.connectionId };
+  const state = await client.snapshot(session.connectionId);
+  const sword = state.stash.find(i => i.template === 'iron_sword');
+  await rejected('INVALID_FIELDS', () => command('sell', { itemId: sword.id, quantity: 1, price: 9999 }, 'price', extra));
+  await rejected('INVALID_FIELDS', () => command('buy', { offerId: 'potion', quantity: 1, playerId: 'bob' }, 'spoof', extra));
+  await command('sell', { itemId: sword.id, quantity: 1 }, 'sell', extra);
+  await command('buy', { offerId: 'potion', quantity: 1 }, 'buy', extra);
+  await command('acceptContract', { contractId: 'supplies' }, 'contract', extra);
+  const next = await client.snapshot(session.connectionId);
+  assert.equal(next.progression.gold, 5);
+  assert.equal(next.progression.contracts[0].status, 'ACCEPTED');
+  await rejected('INVALID_FIELDS', () => command('turnInContract', { contractId: 'supplies', itemIds: [], gold: 9999 }, 'reward', extra));
+});

@@ -1,7 +1,14 @@
 import type { Command } from './protocol.ts';
 
 export interface Item { id: string; template: string; quantity: number }
+export interface ContractTerms { id: string; name: string; template: string; quantity: number; gold: number; xp: number; version: number }
+export interface Progression {
+  gold: number; xp: number; level: number; skillPoints: number;
+  bargaining: number; workshop: number; archive: number;
+  contracts: { id: string; status: 'ACCEPTED' | 'COMPLETED'; terms: ContractTerms }[];
+}
 export interface PlayerState {
+  progression: Progression;
   playerId: string;
   stash: Item[];
   active: null | { raidId: string; worldId: string; participantId: string; expeditionId: string; items: Item[] };
@@ -16,7 +23,9 @@ export interface Projection {
 }
 export class RemoteError extends Error {
   code: string;
-  constructor(code: string) { super(code); this.code = code; }
+  status: number;
+  commandRejected = false;
+  constructor(code: string, status = 0) { super(code); this.code = code; this.status = status; }
 }
 export class CoreClient {
   baseUrl: string;
@@ -33,7 +42,7 @@ export class CoreClient {
       body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(5000)
     });
     const value = await response.json() as { error?: string };
-    if (!response.ok) throw new RemoteError(value.error ?? 'HTTP_ERROR');
+    if (!response.ok) throw new RemoteError(value.error ?? 'HTTP_ERROR', response.status);
     return value as T;
   }
   command<T = unknown>(command: Command) {

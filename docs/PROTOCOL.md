@@ -1,4 +1,4 @@
-# Протокол 1 / схема базы 2
+# Протокол 1 / схема базы 3
 
 ## Доверие
 
@@ -18,7 +18,7 @@ HTTP API — внутренний канал доверенного SkyMP-ада
 
 Форма команды: `{protocolVersion: 1, requestId, operation, payload, connectionId?, worldApproved?}`. Точные поля и ограничения — `src/protocol.ts`; неизвестные поля отклоняются.
 
-Системные операции: registerPlayer, createWorld, openConnection, closeConnection, closeWorld, recordDeath. Операции подключённого игрока: beginExpedition, pickup, consume, extract, splitStack, mergeStacks. Для них playerId выводится из connectionId, а не принимается из payload. Операции активной экспедиции требуют её expeditionId вместе с worldId.
+Системные операции: registerPlayer, createWorld, openConnection, closeConnection, closeWorld, recordDeath. Операции подключённого игрока: beginExpedition, pickup, consume, extract, splitStack, mergeStacks, buy, sell, upgrade, learnSkill, acceptContract, turnInContract. Для них playerId выводится из connectionId, а не принимается из payload. Операции активной экспедиции требуют её expeditionId вместе с worldId.
 
 ## Идентичность и повторы
 
