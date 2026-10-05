@@ -1,15 +1,19 @@
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {performance} from 'node:perf_hooks';
 import {ExtractionCore,DomainError} from '../src/core.mjs';
 import {decodeCommand} from '../src/protocol.ts';
 import {ECONOMY} from '../src/economy.mjs';
-const total=Number(process.argv[2]??10000);
+const total=Number(process.argv[2]??10000),firstSeed=Number(process.argv[3]??1);
+if(!Number.isSafeInteger(firstSeed)||firstSeed<1||firstSeed+total>1000001)throw new Error('INVALID_FIRST_SEED');
+const outcomes=createHash('sha256');
 if(!Number.isSafeInteger(total)||total<1||total>100000)throw new Error('INVALID_SEQUENCE_COUNT');
 const times=[];let transitions=0,rejected=0,replayed=0,maxProjectionBytes=0;
 const started=performance.now();
-for(let seed=1;seed<=total;seed++){
+for(let seed=firstSeed;seed<firstSeed+total;seed++){
  let random=seed>>>0,index=0;const rng=()=>{random=(Math.imul(random,1664525)+1013904223)>>>0;return random>>>8;};
  const c=new ExtractionCore(':memory:',{authority:{canPickup:()=>true,canConsume:()=>true,canExtract:()=>true}});
+ const order=(table,a,b)=>Number(c.row('SELECT rowid AS n FROM '+table+' WHERE id=?',a.id).n)-Number(c.row('SELECT rowid AS n FROM '+table+' WHERE id=?',b.id).n);
  const trace=[],begin=performance.now();
  const invoke=(op,actor,fn)=>{
   const before=JSON.stringify(c.projection()),gold=c.economicTotals().gold,units=c.economicTotals().units;
@@ -35,13 +39,14 @@ for(let seed=1;seed<=total;seed++){
   const steps=12+rng()%21;
   for(let step=0;step<steps;step++){
    const actor=rng()%2?'a':'b',state=c.snapshot(actor),action=rng()%8;
+   state.stash.sort((a,b)=>order('items',a,b));state.active?.items.sort((a,b)=>order('items',a,b));
    if(!state.active){
     if(action<3){const loadout=state.stash.filter(()=>rng()%2===0).map(i=>i.id);invoke('begin',actor,id=>c.beginExpedition(id,actor,w.raidId,loadout));}
     else if(action<6&&state.stash.length){const item=state.stash[rng()%state.stash.length];invoke('sell',actor,id=>c.sell(id,actor,item.id,1));}
     else {const offer=ECONOMY.offers[rng()%ECONOMY.offers.length];invoke('buy',actor,id=>c.buy(id,actor,offer.id,1));}
    }else{
     const active=state.active;
-    if(action<4){const containers=c.projection().containers.filter(x=>x.worldId===w.raidId&&x.items.length);const container=containers.length?containers[rng()%containers.length]:{id:'missing',items:[{id:'missing'}]};const item=container.items[rng()%container.items.length];invoke('pickup',actor,id=>c.pickup(id,actor,w.raidId,container.id,item.id,active.expeditionId));}
+    if(action<4){const containers=c.projection().containers.filter(x=>x.worldId===w.raidId&&x.items.length).sort((a,b)=>order('locations',a,b));for(const x of containers)x.items.sort((a,b)=>order('items',a,b));const container=containers.length?containers[rng()%containers.length]:{id:'missing',items:[{id:'missing'}]};const item=container.items[rng()%container.items.length];invoke('pickup',actor,id=>c.pickup(id,actor,w.raidId,container.id,item.id,active.expeditionId));}
     else if(action===4)invoke('death',actor,id=>c.recordDeath(id,actor,w.raidId,active.expeditionId));
     else if(action===5)invoke('extract',actor,id=>c.extract(id,actor,w.raidId,'simulated-exit',active.expeditionId));
     else {const potion=active.items.find(i=>i.template==='healing_potion');invoke('consume',actor,id=>c.consume(id,actor,w.raidId,potion?.id??'missing',1,active.expeditionId));}
@@ -50,9 +55,10 @@ for(let seed=1;seed<=total;seed++){
    assert.throws(()=>decodeCommand({protocolVersion:1,requestId:'fuzz',operation:step%2?'constructor':'buy',payload:{offerId:'potion',quantity:rng(),playerId:'other'},connectionId:'unknown'}),e=>e instanceof DomainError);
   }
   assert.equal(c.rows('PRAGMA foreign_key_check').length,0);
+  outcomes.update(JSON.stringify({seed,players:c.rows('SELECT player_id,gold,xp FROM progression ORDER BY player_id'),items:c.rows('SELECT template,SUM(quantity) AS quantity FROM items GROUP BY template ORDER BY template')}));
  }catch(error){console.error(JSON.stringify({seed,trace}));throw error;}finally{c.close();}
  times.push(performance.now()-begin);
- if(seed%1000===0)console.log(JSON.stringify({completed:seed,total,transitions,rejected}));
+ if(seed%1000===0)console.log(JSON.stringify({completed:seed-firstSeed+1,total,transitions,rejected}));
 }
 times.sort((a,b)=>a-b);
-console.log(JSON.stringify({independentSequences:total,acceptedTransitions:transitions,rejectedCommands:rejected,replayedReceipts:replayed,elapsedMs:Math.round(performance.now()-started),sequenceMs:{p50:times[Math.floor(total*.5)],p95:times[Math.floor(total*.95)],max:times.at(-1)},maxProjectionBytes,rssBytes:process.memoryUsage().rss}));
+console.log(JSON.stringify({independentSequences:total,firstSeed,outcomeHash:outcomes.digest('hex'),acceptedTransitions:transitions,rejectedCommands:rejected,replayedReceipts:replayed,elapsedMs:Math.round(performance.now()-started),sequenceMs:{p50:times[Math.floor(total*.5)],p95:times[Math.floor(total*.95)],max:times.at(-1)},maxProjectionBytes,rssBytes:process.memoryUsage().rss}));
