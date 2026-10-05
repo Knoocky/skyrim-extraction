@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
+import { SESSION_SCHEMA } from './session-schema.mjs';
 
 export class DomainError extends Error {
   constructor(code) { super(code); this.name = 'DomainError'; this.code = code; }
@@ -30,14 +31,14 @@ export class ExtractionCore {
     this.db = new DatabaseSync(filename);
     try {
       this.db.exec(`
-        PRAGMA foreign_keys = ON;
+        PRAGMA foreign_keys = OFF;
         PRAGMA busy_timeout = 5000;
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous = FULL;
         BEGIN IMMEDIATE;
       `);
       const version = this.row('PRAGMA user_version').user_version;
-      requireThat(version <= 1, 'UNSUPPORTED_SCHEMA');
+      requireThat(version <= 2, 'UNSUPPORTED_SCHEMA');
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS players (id TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS raids (
@@ -90,7 +91,14 @@ export class ExtractionCore {
           PRAGMA user_version = 1;
         `);
       }
+      if (version < 2) {
+        this.db.exec(SESSION_SCHEMA);
+        this.run('INSERT INTO projection_state VALUES (1, ?, 0, 0)', randomUUID());
+        this.queueProjection();
+      }
+      requireThat(this.rows('PRAGMA foreign_key_check').length === 0, 'INVALID_DATABASE_REFERENCES');
       this.db.exec('COMMIT');
+      this.db.exec('PRAGMA foreign_keys = ON');
     } catch (error) {
       if (this.db.isTransaction) this.db.exec('ROLLBACK');
       this.db.close();
@@ -101,6 +109,93 @@ export class ExtractionCore {
   row(sql, ...params) { return this.db.prepare(sql).get(...params); }
   rows(sql, ...params) { return this.db.prepare(sql).all(...params).map(row => ({ ...row })); }
   run(sql, ...params) { return this.db.prepare(sql).run(...params); }
+  transaction(execute) {
+    if (this.db.isTransaction) return execute();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const result = execute();
+      this.db.exec('COMMIT');
+      return result;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+  projectionMetadata() {
+    const row = this.row('SELECT * FROM projection_state WHERE id = 1');
+    return { databaseId: row.database_id, revision: row.revision };
+  }
+  readSnapshot(playerId) {
+    const stash = this.itemsAt(this.stash(playerId));
+    const active = this.row("SELECT * FROM participants WHERE player_id = ? AND status = 'ACTIVE'", playerId);
+    return { playerId, stash, active: active ? {
+      raidId: active.raid_id, worldId: active.raid_id,
+      participantId: active.id, expeditionId: active.id,
+      items: this.itemsAt(this.row('SELECT id FROM locations WHERE participant_id = ?', active.id).id)
+    } : null };
+  }
+  queueProjection() {
+    this.run('UPDATE projection_state SET revision = revision + 1 WHERE id = 1');
+    const state = this.projectionMetadata();
+    const payload = {
+      protocolVersion: 1, ...state,
+      players: this.rows('SELECT id FROM players ORDER BY id').map(p => this.readSnapshot(p.id)),
+      worlds: this.rows('SELECT id, status FROM raids ORDER BY id'),
+      containers: this.rows("SELECT id, raid_id AS worldId FROM locations WHERE kind = 'CONTAINER' ORDER BY id")
+        .map(container => ({ ...container, items: this.itemsAt(container.id) }))
+    };
+    // A coalescing outbox: complete desired state supersedes older undelivered state.
+    this.run(`INSERT INTO projection_outbox VALUES (1, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET revision = excluded.revision, payload = excluded.payload`, state.revision, JSON.stringify(payload));
+  }
+  projection() {
+    return this.transaction(() => {
+      const row = this.row('SELECT payload FROM projection_outbox WHERE id = 1');
+      return row ? JSON.parse(row.payload) : null;
+    });
+  }
+  acknowledgeProjection(databaseId, revision) {
+    requireThat(validId(databaseId) && Number.isSafeInteger(revision) && revision >= 0, 'INVALID_PROJECTION');
+    return this.transaction(() => {
+      const state = this.projectionMetadata();
+      requireThat(databaseId === state.databaseId, 'WRONG_DATABASE');
+      requireThat(revision <= state.revision, 'FUTURE_REVISION');
+      this.run('UPDATE projection_state SET acknowledged = MAX(acknowledged, ?) WHERE id = 1', revision);
+      // Keep the latest payload for a restarted adapter, even after acknowledgement.
+      return { ...state, acknowledged: this.row('SELECT acknowledged FROM projection_state WHERE id = 1').acknowledged };
+    });
+  }
+  openConnection(requestId, playerId) {
+    requireThat(validId(playerId), 'INVALID_PLAYER_ID');
+    return this.command('system', requestId, 'openConnection', { playerId }, () => {
+      this.stash(playerId);
+      const previous = this.row('SELECT generation FROM connections WHERE player_id = ?', playerId);
+      const connectionId = randomUUID(), generation = (previous?.generation ?? 0) + 1;
+      this.run(`INSERT INTO connections VALUES (?, ?, ?, 'OPEN') ON CONFLICT(player_id)
+        DO UPDATE SET id = excluded.id, generation = excluded.generation, status = 'OPEN'`, playerId, connectionId, generation);
+      return { playerId, connectionId, generation };
+    });
+  }
+  connection(connectionId) {
+    requireThat(validId(connectionId), 'INVALID_CONNECTION');
+    const connection = this.row("SELECT * FROM connections WHERE id = ? AND status = 'OPEN'", connectionId);
+    requireThat(connection, 'STALE_CONNECTION');
+    return connection;
+  }
+  closeConnection(requestId, connectionId) {
+    requireThat(validId(connectionId), 'INVALID_CONNECTION');
+    return this.command('system', requestId, 'closeConnection', { connectionId }, () => {
+      const connection = this.connection(connectionId);
+      this.run("UPDATE connections SET status = 'CLOSED' WHERE id = ?", connectionId);
+      return { connectionId, playerId: connection.player_id, status: 'CLOSED' };
+    });
+  }
+  executeConnected(connectionId, execute) {
+    // Check and execute under the same write lock: a stale connection cannot win a race.
+    return this.transaction(() => {
+      const connection = this.connection(connectionId);
+      const result = execute(connection.player_id);
+      requireThat(!result || typeof result.then !== 'function', 'ASYNC_TRANSACTION');
+      return result;
+    });
+  }
   itemsAt(locationId) {
     return this.rows('SELECT id, template, quantity FROM items WHERE location_id = ? ORDER BY id', locationId);
   }
@@ -109,32 +204,28 @@ export class ExtractionCore {
     requireThat(stash, 'PLAYER_NOT_FOUND');
     return stash.id;
   }
-  active(playerId, raidId) {
+  active(playerId, raidId, expeditionId) {
     const participant = this.row(`SELECT p.*, l.id AS inventory_id FROM participants p
       JOIN raids r ON r.id = p.raid_id JOIN locations l ON l.participant_id = p.id
       WHERE p.player_id = ? AND p.raid_id = ? AND p.status = 'ACTIVE' AND r.status = 'OPEN'`, playerId, raidId);
     requireThat(participant, 'NOT_ACTIVE');
+    requireThat(expeditionId === undefined || participant.id === expeditionId, 'STALE_EXPEDITION');
     return participant;
   }
   command(actor, requestId, operation, payload, execute) {
     requireThat(validId(requestId), 'INVALID_REQUEST_ID');
     const command = canonical({ operation, payload });
-    this.db.exec('BEGIN IMMEDIATE');
-    try {
+    return this.transaction(() => {
       const cached = this.row('SELECT command, result FROM receipts WHERE actor = ? AND request_id = ?', actor, requestId);
       if (cached) {
         requireThat(cached.command === command, 'REQUEST_ID_REUSED');
-        this.db.exec('COMMIT');
         return JSON.parse(cached.result);
       }
       const result = execute();
+      this.queueProjection();
       this.run('INSERT INTO receipts VALUES (?, ?, ?, ?)', actor, requestId, command, JSON.stringify(result));
-      this.db.exec('COMMIT');
       return result;
-    } catch (error) {
-      this.db.exec('ROLLBACK');
-      throw error;
-    }
+    });
   }
   // Provisioning only. Authenticated player identities must come from the adapter.
   registerPlayer(requestId, playerId) {
@@ -209,11 +300,11 @@ export class ExtractionCore {
     });
   }
   // Records an authorized expenditure only. A receipt is NOT a replayable healing effect.
-  consume(requestId, playerId, raidId, itemId, quantity = 1) {
+  consume(requestId, playerId, raidId, itemId, quantity = 1, expeditionId) {
     requireThat([playerId, raidId, itemId].every(validId), 'INVALID_ID');
     requireThat(validQuantity(quantity), 'INVALID_QUANTITY');
-    return this.command('player:' + playerId, requestId, 'consume', { playerId, raidId, itemId, quantity }, () => {
-      const participant = this.active(playerId, raidId);
+    return this.command('player:' + playerId, requestId, 'consume', { playerId, raidId, itemId, quantity, ...(expeditionId === undefined ? {} : { expeditionId }) }, () => {
+      const participant = this.active(playerId, raidId, expeditionId);
       const item = this.row('SELECT * FROM items WHERE id = ? AND location_id = ?', itemId, participant.inventory_id);
       requireThat(item, 'ITEM_NOT_IN_INVENTORY');
       requireThat(stackable(item.template), 'NOT_CONSUMABLE');
@@ -226,13 +317,19 @@ export class ExtractionCore {
     });
   }
   joinRaid(requestId, playerId, raidId, itemIds) {
+    return this.startExpedition(requestId, playerId, raidId, itemIds, false);
+  }
+  beginExpedition(requestId, playerId, worldId, itemIds) {
+    return this.startExpedition(requestId, playerId, worldId, itemIds, true);
+  }
+  startExpedition(requestId, playerId, raidId, itemIds, allowReturn) {
     requireThat(validId(playerId) && validId(raidId), 'INVALID_ID');
     requireThat(Array.isArray(itemIds) && itemIds.length <= 100 && itemIds.every(validId) && new Set(itemIds).size === itemIds.length, 'INVALID_LOADOUT');
-    return this.command('player:' + playerId, requestId, 'joinRaid', { playerId, raidId, itemIds }, () => {
+    return this.command('player:' + playerId, requestId, allowReturn ? 'beginExpedition' : 'joinRaid', { playerId, raidId, itemIds }, () => {
       const stashId = this.stash(playerId);
       requireThat(this.row("SELECT id FROM raids WHERE id = ? AND status = 'OPEN'", raidId), 'RAID_NOT_OPEN');
       requireThat(!this.row("SELECT id FROM participants WHERE player_id = ? AND status = 'ACTIVE'", playerId), 'ALREADY_ACTIVE');
-      requireThat(!this.row('SELECT id FROM participants WHERE player_id = ? AND raid_id = ?', playerId, raidId), 'ALREADY_PARTICIPATED');
+      if (!allowReturn) requireThat(!this.row('SELECT id FROM participants WHERE player_id = ? AND raid_id = ?', playerId, raidId), 'ALREADY_PARTICIPATED');
       for (const itemId of itemIds) {
         requireThat(this.row('SELECT id FROM items WHERE id = ? AND location_id = ?', itemId, stashId), 'ITEM_NOT_IN_STASH');
       }
@@ -240,13 +337,13 @@ export class ExtractionCore {
       this.run("INSERT INTO participants VALUES (?, ?, ?, 'ACTIVE')", participantId, playerId, raidId);
       this.run("INSERT INTO locations VALUES (?, 'INVENTORY', ?, ?, ?)", inventoryId, playerId, raidId, participantId);
       for (const itemId of itemIds) this.run('UPDATE items SET location_id = ? WHERE id = ?', inventoryId, itemId);
-      return { participantId, raidId, inventoryId, items: this.itemsAt(inventoryId) };
+      return { participantId, expeditionId: participantId, raidId, worldId: raidId, inventoryId, items: this.itemsAt(inventoryId) };
     });
   }
-  pickup(requestId, playerId, raidId, containerId, itemId) {
+  pickup(requestId, playerId, raidId, containerId, itemId, expeditionId) {
     requireThat([playerId, raidId, containerId, itemId].every(validId), 'INVALID_ID');
-    return this.command('player:' + playerId, requestId, 'pickup', { playerId, raidId, containerId, itemId }, () => {
-      const participant = this.active(playerId, raidId);
+    return this.command('player:' + playerId, requestId, 'pickup', { playerId, raidId, containerId, itemId, ...(expeditionId === undefined ? {} : { expeditionId }) }, () => {
+      const participant = this.active(playerId, raidId, expeditionId);
       requireThat(this.row("SELECT id FROM locations WHERE id = ? AND kind = 'CONTAINER' AND raid_id = ?", containerId, raidId), 'WRONG_CONTAINER');
       requireThat(this.row('SELECT id FROM items WHERE id = ? AND location_id = ?', itemId, containerId), 'ITEM_UNAVAILABLE');
       requireThat(this.authority.canPickup?.({ playerId, raidId, containerId, itemId }) === true, 'PICKUP_NOT_AUTHORIZED');
@@ -255,20 +352,20 @@ export class ExtractionCore {
     });
   }
   // Trusted death event from the world adapter, never a player-issued kill command.
-  recordDeath(requestId, playerId, raidId) {
+  recordDeath(requestId, playerId, raidId, expeditionId) {
     requireThat([playerId, raidId].every(validId), 'INVALID_ID');
-    return this.command('system', requestId, 'recordDeath', { playerId, raidId }, () => {
-      const participant = this.active(playerId, raidId), containerId = randomUUID();
+    return this.command('system', requestId, 'recordDeath', { playerId, raidId, ...(expeditionId === undefined ? {} : { expeditionId }) }, () => {
+      const participant = this.active(playerId, raidId, expeditionId), containerId = randomUUID();
       this.run("INSERT INTO locations VALUES (?, 'CONTAINER', NULL, ?, NULL)", containerId, raidId);
       this.run('UPDATE items SET location_id = ? WHERE location_id = ?', containerId, participant.inventory_id);
       this.run("UPDATE participants SET status = 'DEAD' WHERE id = ?", participant.id);
       return { playerId, raidId, status: 'DEAD', containerId, items: this.itemsAt(containerId) };
     });
   }
-  extract(requestId, playerId, raidId, exitId) {
+  extract(requestId, playerId, raidId, exitId, expeditionId) {
     requireThat([playerId, raidId, exitId].every(validId), 'INVALID_ID');
-    return this.command('player:' + playerId, requestId, 'extract', { playerId, raidId, exitId }, () => {
-      const participant = this.active(playerId, raidId);
+    return this.command('player:' + playerId, requestId, 'extract', { playerId, raidId, exitId, ...(expeditionId === undefined ? {} : { expeditionId }) }, () => {
+      const participant = this.active(playerId, raidId, expeditionId);
       requireThat(this.authority.canExtract?.({ playerId, raidId, exitId }) === true, 'EXTRACTION_NOT_AUTHORIZED');
       const items = this.itemsAt(participant.inventory_id);
       this.run('UPDATE items SET location_id = ? WHERE location_id = ?', this.stash(playerId), participant.inventory_id);
@@ -290,16 +387,6 @@ export class ExtractionCore {
   // Consistent reconnect snapshot. Adapter may project this into the game inventory.
   snapshot(playerId) {
     requireThat(validId(playerId), 'INVALID_PLAYER_ID');
-    this.db.exec('BEGIN');
-    try {
-      const stash = this.itemsAt(this.stash(playerId));
-      const active = this.row("SELECT * FROM participants WHERE player_id = ? AND status = 'ACTIVE'", playerId);
-      const result = { playerId, stash, active: active ? {
-        raidId: active.raid_id, participantId: active.id,
-        items: this.itemsAt(this.row("SELECT id FROM locations WHERE participant_id = ?", active.id).id)
-      } : null };
-      this.db.exec('COMMIT');
-      return result;
-    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    return this.transaction(() => ({ ...this.projectionMetadata(), ...this.readSnapshot(playerId) }));
   }
 }

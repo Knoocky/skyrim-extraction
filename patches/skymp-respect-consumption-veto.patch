@@ -1,0 +1,90 @@
+diff --git a/skymp5-server/cpp/server_guest_lib/MpActor.cpp b/skymp5-server/cpp/server_guest_lib/MpActor.cpp
+index fa6bd10..62ee212 100644
+--- a/skymp5-server/cpp/server_guest_lib/MpActor.cpp
++++ b/skymp5-server/cpp/server_guest_lib/MpActor.cpp
+@@ -515,7 +515,10 @@ bool MpActor::OnEquip(uint32_t baseId)
+ 
+   bool spellLearned = false;
+   if (isIngredient || isPotion) {
+-    EatItem(baseId, recordType);
++    if (!EatItem(baseId, recordType)) {
++      SendInventoryUpdate();
++      return false;
++    }
+ 
+     std::vector<std::optional<
+       std::variant<bool, double, std::string, SpSnippetObjectArgument>>>
+@@ -1058,13 +1061,13 @@ DeathStateContainerMessage MpActor::GetDeathStateMsg(
+   return res;
+ }
+ 
+-void MpActor::EatItem(uint32_t baseId, espm::Type t)
++bool MpActor::EatItem(uint32_t baseId, espm::Type t)
+ {
+   bool isIngredient = t == "INGR";
+   bool isAlchemyItem = t == "ALCH";
+ 
+   EatItemEvent eatItemEvent(this, baseId, isIngredient, isAlchemyItem);
+-  eatItemEvent.Fire(GetParent());
++  return eatItemEvent.Fire(GetParent());
+ }
+ 
+ bool MpActor::ReadBook(const uint32_t baseId)
+diff --git a/skymp5-server/cpp/server_guest_lib/MpActor.h b/skymp5-server/cpp/server_guest_lib/MpActor.h
+index 6b8465d..a854827 100644
+--- a/skymp5-server/cpp/server_guest_lib/MpActor.h
++++ b/skymp5-server/cpp/server_guest_lib/MpActor.h
+@@ -207,7 +207,7 @@ private:
+                                               bool isDead,
+                                               bool shouldTeleport);
+ 
+-  void EatItem(uint32_t baseId, espm::Type t);
++  bool EatItem(uint32_t baseId, espm::Type t);
+ 
+   bool ReadBook(uint32_t baseId);
+ 
+diff --git a/unit/HealthRestorationTest.cpp b/unit/HealthRestorationTest.cpp
+index 06f710c..82eb641 100644
+--- a/unit/HealthRestorationTest.cpp
++++ b/unit/HealthRestorationTest.cpp
+@@ -37,3 +37,40 @@ TEST_CASE("Potions restore health", "[Restoration]")
+   p.DestroyActor(0xff000000);
+   DoDisconnect(p, 0);
+ }
++
++namespace {
++class ConsumptionVetoListener : public PartOneListener
++{
++public:
++  bool block = true;
++  void OnConnect(Networking::UserId) override {}
++  void OnDisconnect(Networking::UserId) override {}
++  void OnCustomPacket(Networking::UserId, const simdjson::dom::element&) override {}
++  bool OnMpApiEvent(const GameModeEvent& event) override
++  {
++    return !block || std::string(event.GetName()) != "onEatItem";
++  }
++};
++}
++
++TEST_CASE("Vetoed potion neither heals nor consumes inventory", "[Restoration][Extraction]")
++{
++  PartOne& p = GetPartOne();
++  DoConnect(p, 0);
++  p.CreateActor(0xff000000, { 0, 0, 0 }, 0, 0x3c);
++  p.SetUserActor(0, 0xff000000);
++  auto& ac = p.worldState.GetFormAt<MpActor>(0xff000000);
++  ac.AddItem(0x3EAE3, 2);
++  ac.SetPercentages({ 0.1f, 0.f, 0.f });
++  auto listener = std::make_shared<ConsumptionVetoListener>();
++  p.AddListener(listener);
++  const bool result = ac.OnEquip(0x3EAE3);
++  const auto count = ac.GetInventory().GetItemCount(0x3EAE3);
++  const auto health = ac.GetChangeForm().actorValues.healthPercentage;
++  listener->block = false;
++  p.DestroyActor(0xff000000);
++  DoDisconnect(p, 0);
++  REQUIRE_FALSE(result);
++  REQUIRE(count == 2);
++  REQUIRE(health == 0.1f);
++}

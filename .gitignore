@@ -14,3 +14,7 @@ coverage/
 *.pfx
 credentials.json
 secrets/
+
+dist/
+data/
+build/

@@ -20,6 +20,7 @@ for (const phase of ['before-commit', 'after-commit']) {
     const itemId = raid.items[0].id;
     core.joinRaid('join', 'alice', raid.raidId, []);
     core.pickup('pickup', 'alice', raid.raidId, raid.containerId, itemId);
+    const projectionBefore = core.projection();
     core.close();
     const child = spawn(process.execPath, [fileURLToPath(new URL('./crash-child.mjs', import.meta.url)), filename, phase, raid.raidId, itemId], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '';
@@ -37,6 +38,8 @@ for (const phase of ['before-commit', 'after-commit']) {
       core = new ExtractionCore(filename, { authority });
       try {
         assert.equal(core.snapshot('alice').active.items[0].quantity, phase === 'before-commit' ? 5 : 3);
+        assert.equal(core.projection().revision, projectionBefore.revision + (phase === 'after-commit' ? 1 : 0));
+        assert.equal(core.projection().players[0].active.items[0].quantity, phase === 'before-commit' ? 5 : 3);
         assert.equal(core.row("SELECT count(*) AS n FROM receipts WHERE request_id = 'crash-consume'").n, phase === 'before-commit' ? 0 : 1);
         const response = core.consume('crash-consume', 'alice', raid.raidId, itemId, 2);
         assert.deepEqual(response, { itemId, consumed: 2, remaining: 3 });
