@@ -126,3 +126,17 @@ test('v6 migration preserves saved terms/receipts and stock, backfills reputatio
  assert.deepEqual(c.projectionMetadata(),{databaseId:'old-database',revision:41});c.close();
  c=new ExtractionCore(file);try{assert.equal(c.projectionMetadata().revision,41);assert.equal(c.progression('legacy').reputation,10);}finally{c.close();}
 });
+
+
+test('re-provisioned worlds inherit time without restocking twice or stalling the next daily cycle',t=>{
+ const {c}=fixture(t);c.registerPlayer('a','a');const model=new WorldModel(c),first=c.createRaid('first',[]);
+ model.configure('configure-first',first.raidId);model.advance('day-one',first.raidId,1920);model.advance('midnight-two',first.raidId,2880);
+ const bow=c.snapshot('a').stash.find(i=>i.template==='hunting_bow');c.sell('fund','a',bow.id,1);c.buy('purchase','a','potion',1);
+ assert.equal(c.market().stock.find(s=>s.offerId==='potion').quantity,99);
+ const sword=c.snapshot('a').stash.find(i=>i.template==='iron_sword');c.beginExpedition('enter','a',first.raidId,[sword.id]);c.recoverWorld('crash',first.raidId);
+ const next=c.createRaid('next',[]);model.configure('configure-next',next.raidId);
+ assert.equal(model.state(next.raidId).minute,2880);assert.equal(model.state(next.raidId).night,true);
+ assert.equal(c.market().cycle,2);assert.equal(c.market().stock.find(s=>s.offerId==='potion').quantity,99);
+ model.advance('next-day',next.raidId,4320);assert.equal(c.market().cycle,3);assert.equal(c.market().stock.find(s=>s.offerId==='potion').quantity,100);
+ const before=c.projection();assert.deepEqual(model.configure('configure-next',next.raidId).minute,2880);assert.deepEqual(c.projection(),before);
+});

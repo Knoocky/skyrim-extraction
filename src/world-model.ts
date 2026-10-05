@@ -19,7 +19,12 @@ export class WorldModel {
     return c.command('system',requestId,'configureRegion',{worldId},()=>{
       check(c.row("SELECT id FROM raids WHERE id=? AND status='OPEN'",worldId),'RAID_NOT_OPEN');
       check(!c.row('SELECT world_id FROM world_clock WHERE world_id=?',worldId),'WORLD_ALREADY_CONFIGURED');
-      c.run('INSERT INTO world_clock VALUES (?,480)',worldId);
+      const previous=c.row('SELECT MAX(minute) AS minute FROM world_clock')?.minute;
+      const minimumDay=Math.max(Number(c.market().cycle),Number(c.row('SELECT cycle FROM mission_cycle WHERE id=1')?.cycle)-1);
+      // Re-provisioning must not rewind the calendar behind persisted restock/mission cycles.
+      const minute=previous===null||previous===undefined ? minimumDay*1440+480 : Math.max(Number(previous),minimumDay*1440);
+      check(Number.isSafeInteger(minute),'INVALID_WORLD_TIME');
+      c.run('INSERT INTO world_clock VALUES (?,?)',worldId,minute);
       for(const area of REGION.areas) {
         const container=randomUUID();
         c.run("INSERT INTO locations VALUES (?,'CONTAINER',NULL,?,NULL)",container,worldId);
