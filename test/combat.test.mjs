@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createCombat,advanceCombat,commandCombat,contactCombat,attackProfile} from '../src/combat.ts';
+import {COMBAT_VERSION,COMBAT_MANIFEST,createCombat,advanceCombat,commandCombat,contactCombat,attackProfile} from '../src/combat.ts';
 import {CombatAdapter} from '../adapters/combat.ts';
 const player={id:'alice',kind:'player',team:'players',weapon:'sword',weight:'medium',shield:true};
 const enemy={id:'bandit',kind:'npc',team:'bandits',weapon:'sword',weight:'medium',shield:true};
@@ -125,14 +125,14 @@ function harness(overrides={}){
  const host=new CombatAdapter('raid1',[player,enemy],port);
  return {host,log,port,loseLease:()=>{ready=false;}};
 }
-const packet=(sequence=1,intent='light')=>({version:1,sequence,intent});
+const packet=(sequence=1,intent='light')=>({version:COMBAT_VERSION,rulesHash:COMBAT_MANIFEST.rulesHash,sequence,intent});
 test('adapter requires verified identity; client cannot submit damage, positions or target',async()=>{
  const {host,log}=harness();await host.start();
  await assert.rejects(host.execute('intruder',packet()),/COMBAT_LOGIN_REQUIRED/);
  for(const extra of [{actorId:'bandit'},{damage:999},{tick:12},{targetId:'bandit'}])await assert.rejects(host.execute('socket',{...packet(),...extra}),/INVALID_COMBAT_PACKET/);
  await host.execute('socket',packet());const n=log.length;await host.execute('socket',packet());assert.equal(log.length,n);
  await assert.rejects(host.execute('socket',packet(2,'recordDeath')),/UNKNOWN_COMBAT_INTENT/);
- await assert.rejects(host.execute('socket',{...packet(2),version:2}),/COMBAT_VERSION_MISMATCH/);
+ await assert.rejects(host.execute('socket',{...packet(2),version:99}),/COMBAT_VERSION_MISMATCH/);
 });
 test('adapter serializes concurrent actions instead of losing state during await',async()=>{
  let release;const h=harness();await h.host.start();

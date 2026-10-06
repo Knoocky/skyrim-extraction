@@ -1,20 +1,21 @@
+import { createHash } from 'node:crypto';
 import { DomainError } from './domain-error.mjs';
 
 /** Original balance values. No Elden Ring code, timings, animations or assets. */
-export const COMBAT_VERSION = 1;
+export const COMBAT_VERSION = 2;
 export const COMBAT_RULES = Object.freeze({hz:60, maxActors:32, maxPlayers:4, maxStep:120,
   maxHp:100, maxStamina:100000, regen:300, regenDelay:60, maxPoise:100, poiseDelay:180});
 export type Weapon = 'sword'|'axe'|'dagger';
 export type Weight = 'light'|'medium'|'heavy';
 export type Intent = 'light'|'heavy'|'dodge'|'guard'|'releaseGuard'|'parry';
-export type ActionKind = 'idle'|'light'|'heavy'|'dodge'|'guard'|'parry'|'stagger'|'dead';
+export type ActionKind = 'idle'|'light'|'heavy'|'dodge'|'guard'|'parry'|'stagger'|'dead'|'equip';
 export interface FighterSpec {id:string; kind:'player'|'npc'; team:string; weapon:Weapon; weight:Weight; shield:boolean}
 export interface Action {kind:ActionKind; start:number; serial:number; combo:number; targets:string[]}
 export interface Fighter extends FighterSpec {
-  hp:number; stamina:number; poise:number; regenAt:number; poiseAt:number;
+  connected:boolean; hp:number; stamina:number; poise:number; regenAt:number; poiseAt:number;
   action:Action; sequence:number; lastIntent:Intent|null; lastLightEnd:number; lastCombo:number;
 }
-export interface CombatState {version:1; worldId:string; tick:number; pvp:boolean; actors:Fighter[]}
+export interface CombatState {version:2; worldId:string; tick:number; pvp:boolean; actors:Fighter[]; systemSequence:number; lastSystem:string|null; retired:string[]}
 export interface Receipt {actorId:string; sequence:number; intent:Intent}
 export interface Contact {attackerId:string; targetId:string; serial:number; tick:number; distance:number; inArc:boolean; facing:boolean; clear:boolean; safeZone:boolean}
 export interface HitEvent {id:string; tick:number; attackerId:string; targetId:string; outcome:'hit'|'dodged'|'blocked'|'guardBreak'|'parried'; damage:number; killed:boolean}
@@ -24,6 +25,7 @@ const WEAPONS = {
   dagger:{light:[7,4,12,14,14,18,22],heavy:[18,5,22,25,25,40,45]}
 } as const;
 const ROLLS = {light:[26,2,12,24],medium:[32,3,12,30],heavy:[42,5,11,38]} as const;
+export const COMBAT_MANIFEST = Object.freeze({version:COMBAT_VERSION,hz:60,rulesHash:createHash('sha256').update(JSON.stringify({version:COMBAT_VERSION,rules:COMBAT_RULES,weapons:WEAPONS,rolls:ROLLS,equipTicks:18,maxRetired:4096})).digest('hex')});
 export function combatCheck(value:unknown,code:string):asserts value {if(!value)throw new DomainError(code);}
 export function combatId(value:unknown):asserts value is string {
   combatCheck(typeof value==='string'&&/^[A-Za-z0-9_-]{1,48}$/.test(value),'INVALID_COMBAT_ID');
@@ -45,16 +47,17 @@ export function createCombat(worldId:string,specs:readonly FighterSpec[],pvp=fal
     combatCheck(!seen.has(s.id),'DUPLICATE_COMBAT_ACTOR');seen.add(s.id);
     combatCheck((s.kind==='player'||s.kind==='npc')&&Object.hasOwn(WEAPONS,s.weapon)&&Object.hasOwn(ROLLS,s.weight)&&typeof s.shield==='boolean','INVALID_COMBAT_CONFIG');
     return {id:s.id,kind:s.kind,team:s.team,weapon:s.weapon,weight:s.weight,shield:s.shield,
-      hp:100,stamina:100000,poise:100,regenAt:0,poiseAt:0,
+      connected:true,hp:100,stamina:100000,poise:100,regenAt:0,poiseAt:0,
       action:{kind:'idle' as const,start:0,serial:0,combo:0,targets:[]},sequence:0,lastIntent:null,lastLightEnd:-100,lastCombo:0};
   });
-  return {version:1,worldId,tick:0,pvp,actors};
+  return {version:2,worldId,tick:0,pvp,actors,systemSequence:0,lastSystem:null,retired:[]};
 }
 function duration(a:Fighter):number {
   const k=a.action.kind;
   if(k==='light'||k==='heavy'){const p=attackProfile(a.weapon,k);return p.windup+p.active+p.recovery;}
   if(k==='dodge')return ROLLS[a.weight][0];
   if(k==='parry')return 36;
+  if(k==='equip')return 18;
   if(k==='stagger')return 45;
   return Infinity;
 }
@@ -87,7 +90,7 @@ export function commandCombat(input:CombatState,actorId:string,sequence:number,i
   combatCheck(['light','heavy','dodge','guard','releaseGuard','parry'].includes(intent),'UNKNOWN_COMBAT_INTENT');
   const receipt={actorId,sequence,intent};
   if(sequence===a.sequence){combatCheck(intent===a.lastIntent,'COMBAT_SEQUENCE_REUSED');return {state:s,receipt};}
-  combatCheck(sequence===a.sequence+1,'COMBAT_OUT_OF_ORDER');combatCheck(a.hp>0,'COMBAT_ACTOR_DEAD');
+  combatCheck(sequence===a.sequence+1,'COMBAT_OUT_OF_ORDER');combatCheck(a.hp>0,'COMBAT_ACTOR_DEAD');combatCheck(a.connected,'COMBAT_DISCONNECTED');
   let cost=0;
   if(intent==='releaseGuard'){
     combatCheck(a.action.kind==='guard','NOT_GUARDING');

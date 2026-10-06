@@ -1,5 +1,6 @@
+import {decodeLifecycle,lifecycleCombat,type LifecycleCommand} from '../src/combat-lifecycle.ts';
 import {
-  COMBAT_VERSION, combatCheck, combatId, createCombat, advanceCombat, commandCombat, contactCombat,
+  COMBAT_VERSION, COMBAT_MANIFEST, combatCheck, combatId, createCombat, advanceCombat, commandCombat, contactCombat,
   type CombatState, type FighterSpec, type Intent, type Contact, type HitEvent
 } from '../src/combat.ts';
 
@@ -8,6 +9,8 @@ export interface CombatSession {worldId:string; actorId:string}
 export interface CombatPort {
   /** Must include adapter lease health. Never accept client-supplied identity or authority. */
   ready():boolean;
+  /** Server inventory/session/world validation, never a client approval flag. Missing means deny. */
+  approveLifecycle?(command:LifecycleCommand,state:CombatState):boolean;
   session(transportId:string):CombatSession|null;
   /** Engine-observed contact, positions/LOS/safe zones. null means no confirmed collision. */
   observe(attackerId:string,targetId:string):Omit<Contact,'attackerId'|'targetId'|'serial'|'tick'>|null;
@@ -31,7 +34,7 @@ export class CombatAdapter {
   constructor(worldId:string,actors:readonly FighterSpec[],port:CombatPort,pvp=false){
     this.#state=createCombat(worldId,actors,pvp);this.#port=port;
   }
-  get manifest(){return {combatVersion:COMBAT_VERSION,hz:60};}
+  get manifest(){return COMBAT_MANIFEST;}
   snapshot(){return structuredClone(this.#state);}
   private async available(){
     if(this.#port.ready()!==true){
@@ -78,12 +81,22 @@ export class CombatAdapter {
     combatCheck(this.#state.actors.some(a=>a.id===session.actorId&&a.kind==='player'),'COMBAT_PLAYER_REQUIRED');
     combatCheck(raw!==null&&typeof raw==='object'&&!Array.isArray(raw),'INVALID_COMBAT_PACKET');
     const p=raw as Record<string,unknown>;
-    combatCheck(Object.keys(p).length===3&&['version','sequence','intent'].every(k=>Object.hasOwn(p,k)),'INVALID_COMBAT_PACKET');
-    combatCheck(p.version===COMBAT_VERSION,'COMBAT_VERSION_MISMATCH');
+    combatCheck(Object.keys(p).length===4&&['version','rulesHash','sequence','intent'].every(k=>Object.hasOwn(p,k)),'INVALID_COMBAT_PACKET');
+    combatCheck(p.version===COMBAT_VERSION&&p.rulesHash===COMBAT_MANIFEST.rulesHash,'COMBAT_VERSION_MISMATCH');
     const result=commandCombat(this.#state,session.actorId,p.sequence as number,p.intent as Intent);
     // A receipt retry cannot replay projection, damage, or death effects.
     if(this.#state.actors.find(a=>a.id===session.actorId)!.sequence===p.sequence)return result.receipt;
     await this.publish(result.state);return result.receipt;
+    });
+  }
+  /** Trusted lifecycle endpoint. Never route player packets here. */
+  async lifecycle(sequence:number,raw:unknown){
+    return this.run(async()=>{
+      const command=decodeLifecycle(raw);
+      const state=lifecycleCombat(this.#state,sequence,command);
+      if(sequence===this.#state.systemSequence)return {sequence};
+      combatCheck(this.#port.approveLifecycle?.(command,structuredClone(this.#state))===true,'COMBAT_LIFECYCLE_DENIED');
+      await this.publish(state);return {sequence};
     });
   }
   /** Called by trusted server AI, never routed from transport packets. */

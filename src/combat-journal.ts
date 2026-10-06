@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { combatCheck } from './combat.ts';
+import { COMBAT_VERSION, combatCheck } from './combat.ts';
 import { canonical } from './manifest.ts';
 import type { CombatCheckpoint } from '../adapters/combat.ts';
 import type { Command } from './protocol.ts';
@@ -13,7 +13,7 @@ export class CombatJournal {
       CREATE TABLE IF NOT EXISTS combat_checkpoints (
         world_id TEXT PRIMARY KEY, revision INTEGER NOT NULL, payload TEXT NOT NULL,
         commands TEXT NOT NULL, applied INTEGER NOT NULL CHECK(applied IN (0,1))
-      );`);
+      ); CREATE TABLE IF NOT EXISTS combat_closed (world_id TEXT PRIMARY KEY);`);
   }
   close(){this.#db.close();}
   pending(worldId:string):CombatCheckpoint|null {
@@ -21,11 +21,12 @@ export class CombatJournal {
     return r?JSON.parse(String(r.payload)):null;
   }
   stage(checkpoint:CombatCheckpoint,resolve:()=>Command[]):{commands:Command[];applied:boolean}{
-    combatCheck(checkpoint.state.version===1&&Number.isSafeInteger(checkpoint.revision)&&checkpoint.revision>0,'INVALID_COMBAT_CHECKPOINT');
+    combatCheck(checkpoint.state.version===COMBAT_VERSION&&Number.isSafeInteger(checkpoint.revision)&&checkpoint.revision>0,'INVALID_COMBAT_CHECKPOINT');
     combatCheck(checkpoint.id===`${checkpoint.state.worldId}:combat:${checkpoint.revision}`,'INVALID_COMBAT_CHECKPOINT');
     const payload=canonical(checkpoint),world=checkpoint.state.worldId;
     this.#db.exec('BEGIN IMMEDIATE');
     try{
+      combatCheck(!this.#db.prepare('SELECT 1 FROM combat_closed WHERE world_id=?').get(world),'COMBAT_WORLD_CLOSED');
       const row=this.#db.prepare('SELECT * FROM combat_checkpoints WHERE world_id=?').get(world);
       if(row&&row.revision===checkpoint.revision){
         combatCheck(row.payload===payload,'COMBAT_CHECKPOINT_REUSED');
@@ -38,6 +39,15 @@ export class CombatJournal {
         ON CONFLICT(world_id) DO UPDATE SET revision=excluded.revision,payload=excluded.payload,commands=excluded.commands,applied=0`)
         .run(world,checkpoint.revision,payload,canonical(commands));
       this.#db.exec('COMMIT');return {commands,applied:false};
+    }catch(e){this.#db.exec('ROLLBACK');throw e;}
+  }
+  /** Seal only after all effects are confirmed; retained tombstone prevents ID reuse. */
+  seal(worldId:string){
+    this.#db.exec('BEGIN IMMEDIATE');
+    try{
+      combatCheck(!this.pending(worldId),'COMBAT_CHECKPOINT_PENDING');
+      this.#db.prepare('INSERT OR IGNORE INTO combat_closed VALUES (?)').run(worldId);
+      this.#db.exec('COMMIT');
     }catch(e){this.#db.exec('ROLLBACK');throw e;}
   }
   acknowledge(checkpoint:CombatCheckpoint){

@@ -22,7 +22,8 @@
     "package": "node scripts/package-release.mjs",
     "restore": "node scripts/restore.mjs",
     "qa:extended": "node scripts/qa-extended.mjs",
-    "check:bindings": "node scripts/check-bindings.ts"
+    "check:bindings": "node scripts/check-bindings.ts",
+    "qa:combat": "node scripts/qa-combat.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
