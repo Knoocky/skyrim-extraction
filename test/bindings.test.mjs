@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {bindingTemplate,validateBindings,resolveForm} from '../src/bindings.ts';
 test('binding template enumerates every unresolved item/area/exit and cannot pass production validation',()=>{
- const template=bindingTemplate();assert.equal(validateBindings(template,{allowIncomplete:true}).missing,98);
+ const template=bindingTemplate();assert.equal(validateBindings(template,{allowIncomplete:true}).missing,103);
  assert.throws(()=>validateBindings(template),/UNRESOLVED_BINDINGS/);
  template.contentHash='old';assert.throws(()=>validateBindings(template,{allowIncomplete:true}),/INVALID_BINDING_MANIFEST/);
 });

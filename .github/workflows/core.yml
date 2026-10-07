@@ -24,6 +24,7 @@ jobs:
       - run: npm run build
       - run: npm test
       - run: npm run qa:combat -- 100
+      - run: npm run qa:raid -- 600
       - run: npm run demo
       - run: npm run check:bindings -- config/bindings.example.json --template
       - name: Independent scenarios and bounded service soak
@@ -32,14 +33,14 @@ jobs:
           npm run qa:extended -- 10000
           node scripts/qa-service.ts 30
       - name: Portable runtime package
-        run: npm run package -- core-0.8.0.sxe.gz
+        run: npm run package -- core-0.9.0.sxe.gz
       - name: Install test browser
         if: runner.os == 'Linux'
         run: npx playwright install --with-deps chromium
       - name: Install test browser on Windows
         if: runner.os == 'Windows'
         run: npx playwright install chromium
-      - name: Browser economy and retry test
+      - name: Browser economy, combat and retry tests
         run: npm run test:browser
       - name: Browser screenshots and failure context
         if: always() && runner.os == 'Windows'

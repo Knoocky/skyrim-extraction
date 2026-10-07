@@ -1,3 +1,4 @@
+import { RAID_SCHEMA } from './raid-schema.mjs';
 import { validateReleaseContent } from './content-validation.mjs';
 import { extensionSchema } from './extension-schema.mjs';
 import { DatabaseSync } from 'node:sqlite';
@@ -45,7 +46,7 @@ export class ExtractionCore {
         BEGIN IMMEDIATE;
       `);
       const version = this.row('PRAGMA user_version').user_version;
-      requireThat(version <= 7, 'UNSUPPORTED_SCHEMA');
+      requireThat(version <= 8, 'UNSUPPORTED_SCHEMA');
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS players (id TEXT PRIMARY KEY);
         CREATE TABLE IF NOT EXISTS raids (
@@ -118,6 +119,10 @@ export class ExtractionCore {
       if (version < 7) {
         this.db.exec(extensionSchema());
         for (const offer of ECONOMY.offers) this.run('INSERT OR IGNORE INTO market_stock VALUES (?,?)', offer.id, offer.stock);
+      }
+      if (version < 8) {
+        this.db.exec(RAID_SCHEMA);
+        for (const offer of ECONOMY.offers) this.run('INSERT OR IGNORE INTO market_stock VALUES (?,?)', offer.id, offer.stock);
         this.queueProjection();
       }
       requireThat(this.rows('PRAGMA foreign_key_check').length === 0, 'INVALID_DATABASE_REFERENCES');
@@ -130,6 +135,10 @@ export class ExtractionCore {
     }
   }
   close() { this.db.close(); }
+  integratedMutation = false;
+  guardIntegratedWorld(worldId) {
+    requireThat(this.integratedMutation || !this.row("SELECT world_id FROM raid_combat WHERE world_id=? AND status='OPEN'",worldId), 'RAID_COORDINATOR_REQUIRED');
+  }
   row(sql, ...params) { return this.db.prepare(sql).get(...params); }
   rows(sql, ...params) { return this.db.prepare(sql).all(...params).map(row => ({ ...row })); }
   run(sql, ...params) { return this.db.prepare(sql).run(...params); }
@@ -357,6 +366,7 @@ export class ExtractionCore {
   }
   // Records an authorized expenditure only. A receipt is NOT a replayable healing effect.
   consume(requestId, playerId, raidId, itemId, quantity = 1, expeditionId) {
+    this.guardIntegratedWorld(raidId);
     requireThat([playerId, raidId, itemId].every(validId), 'INVALID_ID');
     requireThat(validQuantity(quantity), 'INVALID_QUANTITY');
     return this.command('player:' + playerId, requestId, 'consume', { playerId, raidId, itemId, quantity, ...(expeditionId === undefined ? {} : { expeditionId }) }, () => {
@@ -379,6 +389,7 @@ export class ExtractionCore {
     return this.startExpedition(requestId, playerId, worldId, itemIds, true);
   }
   startExpedition(requestId, playerId, raidId, itemIds, allowReturn) {
+    this.guardIntegratedWorld(raidId);
     requireThat(validId(playerId) && validId(raidId), 'INVALID_ID');
     requireThat(Array.isArray(itemIds) && itemIds.length <= 100 && itemIds.every(validId) && new Set(itemIds).size === itemIds.length, 'INVALID_LOADOUT');
     return this.command('player:' + playerId, requestId, allowReturn ? 'beginExpedition' : 'joinRaid', { playerId, raidId, itemIds }, () => {
@@ -401,6 +412,7 @@ export class ExtractionCore {
     });
   }
   pickup(requestId, playerId, raidId, containerId, itemId, expeditionId) {
+    this.guardIntegratedWorld(raidId);
     requireThat([playerId, raidId, containerId, itemId].every(validId), 'INVALID_ID');
     return this.command('player:' + playerId, requestId, 'pickup', { playerId, raidId, containerId, itemId, ...(expeditionId === undefined ? {} : { expeditionId }) }, () => {
       const participant = this.active(playerId, raidId, expeditionId);
@@ -414,6 +426,7 @@ export class ExtractionCore {
   }
   // Trusted death event from the world adapter, never a player-issued kill command.
   recordDeath(requestId, playerId, raidId, expeditionId) {
+    this.guardIntegratedWorld(raidId);
     requireThat([playerId, raidId].every(validId), 'INVALID_ID');
     return this.command('system', requestId, 'recordDeath', { playerId, raidId, ...(expeditionId === undefined ? {} : { expeditionId }) }, () => {
       const participant = this.active(playerId, raidId, expeditionId), containerId = randomUUID();
@@ -427,6 +440,7 @@ export class ExtractionCore {
     });
   }
   extract(requestId, playerId, raidId, exitId, expeditionId) {
+    this.guardIntegratedWorld(raidId);
     requireThat([playerId, raidId, exitId].every(validId), 'INVALID_ID');
     return this.command('player:' + playerId, requestId, 'extract', { playerId, raidId, exitId, ...(expeditionId === undefined ? {} : { expeditionId }) }, () => {
       const participant = this.active(playerId, raidId, expeditionId);
@@ -445,6 +459,7 @@ export class ExtractionCore {
   }
   // Trusted raid expiration. Disconnect alone never returns equipment to stash.
   closeRaid(requestId, raidId) {
+    this.guardIntegratedWorld(raidId);
     requireThat(validId(raidId), 'INVALID_ID');
     return this.command('system', requestId, 'closeRaid', { raidId }, () => {
       requireThat(this.row("SELECT id FROM raids WHERE id = ? AND status = 'OPEN'", raidId), 'RAID_NOT_OPEN');
@@ -459,6 +474,7 @@ export class ExtractionCore {
   // Crash policy: return only surviving original loadout UUIDs still owned by that expedition.
   // Loot is forfeited, spent/transferred/lost gear is never recreated. Old schema expeditions have no refundable loadout.
   recoverWorld(requestId, worldId) {
+    this.guardIntegratedWorld(worldId);
     requireThat(validId(worldId), 'INVALID_ID');
     return this.command('system',requestId,'recoverWorld',{worldId},()=>{
       requireThat(this.row("SELECT id FROM raids WHERE id=? AND status='OPEN'",worldId),'RAID_NOT_OPEN');

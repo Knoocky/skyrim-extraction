@@ -1,9 +1,14 @@
 {
   "format": 1,
   "runtime": "1.6.1170",
-  "contentHash": "39ed5027e85a92e4ba08f3ed1edb6940e0fa5fc75651ea8ef1bdffff79345254",
+  "contentHash": "ec49539ed9d823f42351590f49d25caff406475522c05a733cee498d2bebc972",
   "plugins": [],
   "items": {
+    "iron_shield": null,
+    "leather_armor": null,
+    "iron_armor": null,
+    "iron_arrow": null,
+    "fire_staff": null,
     "steel_sword": null,
     "steel_dagger": null,
     "iron_axe": null,

@@ -43,6 +43,11 @@ export class AdapterGateway {
     if(live)check(saved.status==='LIVE','ADAPTER_FROZEN');
     return saved;
   }
+  /** Synchronous guarded domain transaction; callbacks must never await. */
+  guarded<T>(raw:Lease,work:()=>T,live=false):T {
+    return this.core.transaction(()=>{this.lease(raw,live);const result=work();check(!(result&&typeof (result as {then?:unknown}).then==='function'),'ASYNC_TRANSACTION');return result;});
+  }
+  suspend(raw:Lease){return this.guarded(raw,()=>{this.core.run("UPDATE adapter_lease SET status='FROZEN' WHERE id=1");});}
   renew(raw:unknown) {
     return this.core.transaction(()=>{
       this.lease(raw);const expiresAt=this.now()+15000;

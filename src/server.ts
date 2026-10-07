@@ -1,3 +1,5 @@
+import type {RaidCoordinator} from '../adapters/raid-runtime.ts';
+import {COMBAT_MANIFEST,type Intent,type FighterSpec} from './combat.ts';
 import { AdapterGateway } from './adapter-gateway.ts';
 import { ADAPTER_MANIFEST } from './manifest.ts';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -36,9 +38,10 @@ function send(response: ServerResponse, status: number, body: unknown) {
   response.end(JSON.stringify(body));
 }
 /** Private service-to-service API. The bearer key grants trusted game-server authority. */
-export function createCoreServer(core: ExtractionCore, token: string, { requireLease = false, maxConcurrent = 32, requestsPerSecond = 120 } = {}) {
+export function createCoreServer(core: ExtractionCore, token: string, { requireLease = false, maxConcurrent = 32, requestsPerSecond = 120, raid }:{requireLease?:boolean;maxConcurrent?:number;requestsPerSecond?:number;raid?:RaidCoordinator} = {}) {
   if (![maxConcurrent,requestsPerSecond].every(n => Number.isInteger(n) && n > 0 && n <= 10000)) throw new Error('INVALID_SERVER_LIMIT');
-  const gateway = requireLease ? new AdapterGateway(core) : null;
+  if(raid&&raid.service.core!==core)throw new Error('RAID_DATABASE_MISMATCH');
+  const gateway = raid?.gateway ?? (requireLease ? new AdapterGateway(core) : null);
   let inFlight = 0, windowStart = performance.now(), requests = 0;
   if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Server token must be 32 random bytes encoded as hex');
   const expected = Buffer.from('Bearer ' + token);
@@ -57,6 +60,22 @@ export function createCoreServer(core: ExtractionCore, token: string, { requireL
       if (request.method === 'GET' && route === '/v1/manifest') return send(response, 200, ADAPTER_MANIFEST);
       if (request.method === 'GET' && route === '/v1/diagnostics') return send(response, 200, core.diagnostics());
       if (request.method === 'GET' && route === '/v1/projection') return send(response, 200, core.projection());
+      if(raid&&request.method==='GET'&&route==='/v1/raid')return send(response,200,{ready:raid.ready,snapshot:raid.snapshot(),manifest:COMBAT_MANIFEST});
+      if(raid&&request.method==='POST'&&route?.startsWith('/v1/raid/')){
+        const p=object(await readJson(request));let result:unknown;
+        if(route==='/v1/raid/intent'){keys(p,['transportId','command']);result=await raid.execute(id(p.transportId),p.command);}
+        else if(route==='/v1/raid/advance'){keys(p,['tick']);result=await raid.advance(integer(p.tick));}
+        else if(route==='/v1/raid/contact'){keys(p,['requestId','attackerId','targetId','serial']);result=await raid.contact(id(p.requestId),id(p.attackerId),id(p.targetId),integer(p.serial));}
+        else if(route==='/v1/raid/npc'){keys(p,['requestId','actorId','sequence','intent']);result=await raid.npc(id(p.requestId),id(p.actorId),integer(p.sequence),id(p.intent) as Intent);}
+        else if(route==='/v1/raid/spawn'){keys(p,['requestId','npc','target']);if(p.target!==null&&typeof p.target!=='string')throw new HttpError(400,'UNKNOWN_MISSION_TARGET');result=await raid.spawn(id(p.requestId),object(p.npc) as unknown as FighterSpec,p.target===null?undefined:p.target);}
+        else if(route==='/v1/raid/retire'){keys(p,['requestId','actorId']);result=await raid.retire(id(p.requestId),id(p.actorId));}
+        else if(route==='/v1/raid/recover'){keys(p,['requestId']);result=await raid.recover(id(p.requestId));}
+        else if(route==='/v1/raid/retry'){keys(p,[]);result=await raid.retry();}
+        else if(route==='/v1/raid/heartbeat'){keys(p,[]);result=await raid.heartbeat();}
+        else if(route==='/v1/raid/connection'){keys(p,['requestId','playerId','connected']);if(typeof p.connected!=='boolean')throw new HttpError(400,'INVALID_CONNECTION_STATE');result=await raid.connection(id(p.requestId),id(p.playerId),p.connected);}
+        else throw new HttpError(404,'NOT_FOUND');
+        return send(response,200,{result,ready:raid.ready});
+      }
       if (request.method !== 'POST') throw new HttpError(404, 'NOT_FOUND');
       const adapterRoutes = ['/v1/adapter/handshake','/v1/adapter/renew','/v1/adapter/reconcile','/v1/adapter/command','/v1/adapter/recover'];
       if (!['/v1/command', '/v1/snapshot', '/v1/ack', ...(gateway ? adapterRoutes : [])].includes(route ?? '')) throw new HttpError(404, 'NOT_FOUND');

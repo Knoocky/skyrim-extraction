@@ -37,7 +37,7 @@ test('full progression reaches finale using extracted loot and verified mission 
  deny('STALE_RANK',()=>c.learnSkill('skill-race','a','fieldcraft',0));
  assert.equal(c.diagnostics().auditEntries,c.diagnostics().receipts);
  assert.equal(c.snapshot('a').reports.length,10);
- assert.deepEqual(validateReleaseContent(),{items:60,recipes:10,contracts:27,areas:6,exits:4});
+ assert.deepEqual(validateReleaseContent(),{items:65,recipes:10,contracts:27,areas:6,exits:4});
 });
 test('safe area reset protects unknown actors and both transition sides across restart',t=>{
  const f=fixture(t),c=f.c;c.registerPlayer('a','a');const w=c.createRaid('w',[]);

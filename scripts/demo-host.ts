@@ -1,3 +1,4 @@
+import {createRaidSandbox} from './raid-sandbox.mjs';
 import { createServer, type IncomingMessage } from 'node:http';
 import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -19,6 +20,8 @@ async function json(request: IncomingMessage): Promise<unknown> {
 }
 export async function createDemoHost() {
   const directory = mkdtempSync(join(tmpdir(), 'extraction-demo-ui-'));
+  const combat=await createRaidSandbox(join(directory,'combat.sqlite'),join(directory,'combat-projection.sqlite'));
+  const combatHeartbeat=setInterval(()=>{void combat.host.heartbeat().catch(()=>{});},5000);combatHeartbeat.unref();
   const core = new ExtractionCore(join(directory, 'core.sqlite'));
   const token = randomBytes(32).toString('hex');
   const internal = createCoreServer(core, token);
@@ -37,7 +40,7 @@ export async function createDemoHost() {
   const { result: world } = await bridge.execute<{ raidId: string }>({ protocolVersion: 1, operation: 'createWorld', requestId: 'world', payload: { loot: ['silver_ring', 'dwemer_relic', { template: 'healing_potion', quantity: 5 }, { template: 'mountain_herb', quantity: 8 }, { template: 'iron_ingot', quantity: 4 }, { template: 'leather', quantity: 2 }, { template: 'raw_meat', quantity: 4 }] } });
   const { result: finaleWorld } = await bridge.execute<{ raidId: string }>({ protocolVersion: 1, operation: 'createWorld', requestId: 'finale-world', payload: { loot: ['dwemer_relic', {template:'dwarven_ingot',quantity:3}] } });
   const allowed = new Set(['beginExpedition', 'pickup', 'consume', 'extract', 'splitStack', 'mergeStacks', 'acceptMission', 'claimMission', 'recoveryKit', 'craft', 'buy', 'sell', 'upgrade', 'learnSkill', 'acceptContract', 'turnInContract', 'demoDeath', 'demoMissionEvent']);
-  const assets: Record<string, [string, string]> = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/app.css': ['app.css', 'text/css'] };
+  const assets: Record<string, [string, string]> = { '/combat':['combat.html','text/html'],'/combat.js':['combat.js','text/javascript'],'/combat.css':['combat.css','text/css'], '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/app.css': ['app.css', 'text/css'] };
   const server = createServer(async (request, response) => {
     const reply = (status: number, value: unknown) => { response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); response.end(JSON.stringify(value)); };
     try {
@@ -46,6 +49,12 @@ export async function createDemoHost() {
       const origin = 'http://127.0.0.1:' + current.port;
       if (request.headers.origin && request.headers.origin !== origin) return reply(403, { error: 'ORIGIN_DENIED' });
       const url = new URL(request.url ?? '/', origin);
+      if(request.method==='GET'&&url.pathname==='/api/combat/state')return reply(200,combat.state());
+      if(request.method==='POST'&&url.pathname==='/api/combat'){
+        if(!request.headers['content-type']?.startsWith('application/json'))return reply(415,{error:'JSON_REQUIRED'});
+        try{return reply(200,await combat.execute(await json(request)));}
+        catch(error){return reply(409,{error:error instanceof Error?error.message:'COMBAT_ERROR',state:combat.state()});}
+      }
       if (request.method === 'GET' && url.pathname === '/api/state') {
         const actor = url.searchParams.get('player') ?? '';
         if (!sessions.has(actor)) return reply(400, { error: 'UNKNOWN_DEMO_PLAYER' });
@@ -86,7 +95,7 @@ export async function createDemoHost() {
     async close() {
       server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
       internal.closeAllConnections(); await new Promise<void>(resolve => internal.close(() => resolve()));
-      projector.close(); core.close(); rmSync(directory, { recursive: true, force: true });
+      clearInterval(combatHeartbeat);combat.close();projector.close(); core.close(); rmSync(directory, { recursive: true, force: true });
     }
   };
 }

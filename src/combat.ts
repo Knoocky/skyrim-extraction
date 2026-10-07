@@ -1,31 +1,34 @@
 import { createHash } from 'node:crypto';
+import {WEAPON_MAP,CONSUMABLE_EFFECTS,GEAR_RULES} from './raid-rules.mjs';
 import { DomainError } from './domain-error.mjs';
 
 /** Original balance values. No Elden Ring code, timings, animations or assets. */
-export const COMBAT_VERSION = 2;
+export const COMBAT_VERSION = 3;
 export const COMBAT_RULES = Object.freeze({hz:60, maxActors:32, maxPlayers:4, maxStep:120,
   maxHp:100, maxStamina:100000, regen:300, regenDelay:60, maxPoise:100, poiseDelay:180});
-export type Weapon = 'sword'|'axe'|'dagger';
+export type Weapon = 'sword'|'axe'|'dagger'|'bow'|'staff';
 export type Weight = 'light'|'medium'|'heavy';
 export type Intent = 'light'|'heavy'|'dodge'|'guard'|'releaseGuard'|'parry';
 export type ActionKind = 'idle'|'light'|'heavy'|'dodge'|'guard'|'parry'|'stagger'|'dead'|'equip';
 export interface FighterSpec {id:string; kind:'player'|'npc'; team:string; weapon:Weapon; weight:Weight; shield:boolean}
 export interface Action {kind:ActionKind; start:number; serial:number; combo:number; targets:string[]}
 export interface Fighter extends FighterSpec {
-  connected:boolean; hp:number; stamina:number; poise:number; regenAt:number; poiseAt:number;
+  connected:boolean; magicka:number; magicAt:number; armor:number; resistance:number; resistElement:'fire'|'frost'|null; resistUntil:number; hp:number; stamina:number; poise:number; regenAt:number; poiseAt:number;
   action:Action; sequence:number; lastIntent:Intent|null; lastLightEnd:number; lastCombo:number;
 }
-export interface CombatState {version:2; worldId:string; tick:number; pvp:boolean; actors:Fighter[]; systemSequence:number; lastSystem:string|null; retired:string[]}
+export interface CombatState {version:3; worldId:string; tick:number; pvp:boolean; actors:Fighter[]; systemSequence:number; lastSystem:string|null; retired:string[]}
 export interface Receipt {actorId:string; sequence:number; intent:Intent}
 export interface Contact {attackerId:string; targetId:string; serial:number; tick:number; distance:number; inArc:boolean; facing:boolean; clear:boolean; safeZone:boolean}
 export interface HitEvent {id:string; tick:number; attackerId:string; targetId:string; outcome:'hit'|'dodged'|'blocked'|'guardBreak'|'parried'; damage:number; killed:boolean}
 const WEAPONS = {
+  bow:{light:[20,3,25,18,26,20,35],heavy:[35,3,30,30,40,35,50]},
+  staff:{light:[20,4,25,0,30,20,40],heavy:[35,5,35,0,45,30,55]},
   sword:{light:[12,6,18,22,22,30,35],heavy:[26,8,30,36,38,65,70]},
   axe:{light:[17,7,23,28,28,40,45],heavy:[32,9,35,44,45,85,90]},
   dagger:{light:[7,4,12,14,14,18,22],heavy:[18,5,22,25,25,40,45]}
 } as const;
 const ROLLS = {light:[26,2,12,24],medium:[32,3,12,30],heavy:[42,5,11,38]} as const;
-export const COMBAT_MANIFEST = Object.freeze({version:COMBAT_VERSION,hz:60,rulesHash:createHash('sha256').update(JSON.stringify({version:COMBAT_VERSION,rules:COMBAT_RULES,weapons:WEAPONS,rolls:ROLLS,equipTicks:18,maxRetired:4096})).digest('hex')});
+export const COMBAT_MANIFEST = Object.freeze({version:COMBAT_VERSION,hz:60,rulesHash:createHash('sha256').update(JSON.stringify({version:COMBAT_VERSION,rules:COMBAT_RULES,weapons:WEAPONS,rolls:ROLLS,equipTicks:18,maxRetired:4096,gear:GEAR_RULES,effects:CONSUMABLE_EFFECTS,weaponMap:WEAPON_MAP})).digest('hex')});
 export function combatCheck(value:unknown,code:string):asserts value {if(!value)throw new DomainError(code);}
 export function combatId(value:unknown):asserts value is string {
   combatCheck(typeof value==='string'&&/^[A-Za-z0-9_-]{1,48}$/.test(value),'INVALID_COMBAT_ID');
@@ -35,7 +38,7 @@ function fighter(state:CombatState,id:string):Fighter {
 }
 export function attackProfile(weapon:Weapon,kind:'light'|'heavy') {
   const [windup,active,recovery,cost,damage,poise,guard]=WEAPONS[weapon][kind];
-  return {windup,active,recovery,cost:cost*1000,damage,poise,guard:guard*1000,reach:weapon==='dagger'?1.5:2.2};
+  return {windup,active,recovery,cost:cost*1000,damage,poise,guard:guard*1000,reach:weapon==='bow'?30:weapon==='staff'?20:weapon==='dagger'?1.5:2.2};
 }
 export function createCombat(worldId:string,specs:readonly FighterSpec[],pvp=false):CombatState {
   combatId(worldId);combatCheck(typeof pvp==='boolean','INVALID_COMBAT_CONFIG');
@@ -47,10 +50,10 @@ export function createCombat(worldId:string,specs:readonly FighterSpec[],pvp=fal
     combatCheck(!seen.has(s.id),'DUPLICATE_COMBAT_ACTOR');seen.add(s.id);
     combatCheck((s.kind==='player'||s.kind==='npc')&&Object.hasOwn(WEAPONS,s.weapon)&&Object.hasOwn(ROLLS,s.weight)&&typeof s.shield==='boolean','INVALID_COMBAT_CONFIG');
     return {id:s.id,kind:s.kind,team:s.team,weapon:s.weapon,weight:s.weight,shield:s.shield,
-      connected:true,hp:100,stamina:100000,poise:100,regenAt:0,poiseAt:0,
+      connected:true,magicka:100000,magicAt:0,armor:0,resistance:0,resistElement:null,resistUntil:0,hp:100,stamina:100000,poise:100,regenAt:0,poiseAt:0,
       action:{kind:'idle' as const,start:0,serial:0,combo:0,targets:[]},sequence:0,lastIntent:null,lastLightEnd:-100,lastCombo:0};
   });
-  return {version:2,worldId,tick:0,pvp,actors,systemSequence:0,lastSystem:null,retired:[]};
+  return {version:3,worldId,tick:0,pvp,actors,systemSequence:0,lastSystem:null,retired:[]};
 }
 function duration(a:Fighter):number {
   const k=a.action.kind;
@@ -72,6 +75,8 @@ export function advanceCombat(input:CombatState,tick:number):CombatState {
     s.tick++;
     for(const a of s.actors){
       if(a.hp===0)continue;
+      if(s.tick>=a.resistUntil){a.resistance=0;a.resistElement=null;}
+      if(s.tick>=a.magicAt&&a.action.kind==='idle')a.magicka=Math.min(100000,a.magicka+GEAR_RULES.magickaRegen);
       if(s.tick-a.action.start>=duration(a)){
         if(a.action.kind==='light'){a.lastLightEnd=s.tick;a.lastCombo=a.action.combo;}
         a.action={kind:'idle',start:s.tick,serial:a.action.serial,combo:0,targets:[]};
@@ -103,6 +108,7 @@ export function commandCombat(input:CombatState,actorId:string,sequence:number,i
     if(intent==='dodge')cost=ROLLS[a.weight][3]*1000;
     if(intent==='parry')cost=18000;
     combatCheck(a.stamina>=cost,'COMBAT_STAMINA_LOW');
+    if(a.weapon==='staff'&&(intent==='light'||intent==='heavy')){const mana=intent==='light'?GEAR_RULES.staffLight:GEAR_RULES.staffHeavy;combatCheck(a.magicka>=mana,'COMBAT_MAGICKA_LOW');a.magicka-=mana;a.magicAt=s.tick+GEAR_RULES.magickaDelay;}
     // A finite chain continues only after recovery, never by cancelling an attack.
     const combo=intent==='light'&&s.tick-a.lastLightEnd<=12?a.lastCombo%3+1:1;
     a.action={kind:intent,start:s.tick,serial:sequence,combo,targets:[]};
@@ -127,7 +133,7 @@ export function contactCombat(input:CombatState,c:Contact):{state:CombatState;ev
   const ev:HitEvent={id:`${s.worldId}:${a.id}:${c.serial}:${b.id}`,tick:s.tick,attackerId:a.id,targetId:b.id,outcome:'hit',damage:0,killed:false};
   const age=s.tick-b.action.start,roll=ROLLS[b.weight];
   if(b.action.kind==='dodge'&&age>=roll[1]&&age<roll[2])ev.outcome='dodged';
-  else if(b.action.kind==='parry'&&age>=3&&age<9&&c.facing){
+  else if(a.weapon!=='bow'&&a.weapon!=='staff'&&b.action.kind==='parry'&&age>=3&&age<9&&c.facing){
     ev.outcome='parried';interrupt(a,s.tick,'stagger');a.poise=0;a.poiseAt=s.tick+180;
   }else if(b.action.kind==='guard'&&c.facing){
     b.regenAt=s.tick+60;
@@ -138,6 +144,7 @@ export function contactCombat(input:CombatState,c:Contact):{state:CombatState;ev
     b.poise=Math.max(0,b.poise-p.poise);b.poiseAt=s.tick+180;
     if(b.poise===0){interrupt(b,s.tick,'stagger');b.poise=100;}
   }
+  ev.damage=Math.ceil(ev.damage*(100-(a.weapon==='staff'?(b.resistElement==='fire'?b.resistance:0):b.armor))/100);
   b.hp=Math.max(0,b.hp-ev.damage);
   if(b.hp===0){interrupt(b,s.tick,'dead');ev.killed=true;}
   return {state:s,event:ev};

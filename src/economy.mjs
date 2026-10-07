@@ -2,7 +2,7 @@
 import { EXTRA_OFFERS } from './extra-offers.mjs';
 import { freeze } from './catalog.mjs';
 export const ECONOMY = freeze({
-  version: 4,
+  version: 5,
   offers: [
     { id: 'sword', trader: 'smith', template: 'iron_sword', buy: 100, sell: 25, stock: 20 },
     { id: 'bow', trader: 'smith', template: 'hunting_bow', buy: 100, sell: 25, stock: 20 },
@@ -14,6 +14,11 @@ export const ECONOMY = freeze({
     { id: 'leather', trader: 'smith', template: 'leather', buy: 15, sell: 4, stock: 100 },
     { id: 'meat', trader: 'apothecary', template: 'raw_meat', buy: 10, sell: 2, stock: 100 },
     { id: 'ration', trader: 'apothecary', template: 'food_ration', buy: 15, sell: 3, stock: 100 },
+    {id:'shield',trader:'smith',template:'iron_shield',buy:80,sell:20,stock:20},
+    {id:'light_armor',trader:'smith',template:'leather_armor',buy:120,sell:30,stock:20},
+    {id:'heavy_armor',trader:'smith',template:'iron_armor',buy:180,sell:45,stock:20},
+    {id:'arrows',trader:'smith',template:'iron_arrow',buy:2,sell:0,stock:1000},
+    {id:'staff',trader:'smith',template:'fire_staff',buy:240,sell:60,stock:10},
     ...EXTRA_OFFERS
   ],
   contracts: [

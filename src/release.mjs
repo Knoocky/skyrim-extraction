@@ -30,14 +30,14 @@ export function createRelease(root,filename) {
   if(/-----BEGIN [A-Z ]*PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}/.test(bytes.toString()))fail('SECRET_IN_PACKAGE');
   return {path,bytes:bytes.length,sha256:digest(bytes),data:bytes.toString('base64')};
  });
- const archive={format:1,version:pkg.version,schema:7,protocol:1,node:'24.19.0',files};
+ const archive={format:1,version:pkg.version,schema:8,protocol:1,node:'24.19.0',files};
  writeFileSync(filename,gzipSync(Buffer.from(JSON.stringify(archive))),{flag:'wx',mode:0o600});
  return {version:pkg.version,files:files.length,sha256:digest(readFileSync(filename))};
 }
 export function readRelease(filename) {
  const zipped=readFileSync(filename);if(zipped.length>32*1024*1024)fail('PACKAGE_TOO_LARGE');
  const value=JSON.parse(gunzipSync(zipped,{maxOutputLength:64*1024*1024}).toString());
- if(!value||value.format!==1||value.schema!==7||value.protocol!==1||value.node!=='24.19.0'||!/^[0-9]+\.[0-9]+\.[0-9]+$/.test(value.version)||!Array.isArray(value.files)||value.files.length<1||value.files.length>1000)fail('INVALID_PACKAGE');
+ if(!value||value.format!==1||value.schema!==8||value.protocol!==1||value.node!=='24.19.0'||!/^[0-9]+\.[0-9]+\.[0-9]+$/.test(value.version)||!Array.isArray(value.files)||value.files.length<1||value.files.length>1000)fail('INVALID_PACKAGE');
  const seen=new Set();
  for(const file of value.files) {
   if(!file||!safe(file.path)||!allowed(file.path)||seen.has(file.path.toLowerCase())||typeof file.data!=='string'||!/^[a-f0-9]{64}$/.test(file.sha256))fail('INVALID_PACKAGE_PATH');

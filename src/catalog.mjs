@@ -4,6 +4,11 @@ export function freeze(value) {
   return Object.freeze(value);
 }
 export const ITEMS = freeze({
+  iron_shield: {name:'Железный щит',kind:'armor',stackable:false,weight:12},
+  leather_armor: {name:'Кожаная броня',kind:'armor',stackable:false,weight:6},
+  iron_armor: {name:'Железная броня',kind:'armor',stackable:false,weight:30},
+  iron_arrow: {name:'Железные стрелы',kind:'ammo',stackable:true,weight:0.1},
+  fire_staff: {name:'Посох пламени',kind:'weapon',stackable:false,weight:8},
   steel_sword: {"name": "Стальной меч", "kind": "weapon", "stackable": false, "weight": 10},
   steel_dagger: {"name": "Стальной кинжал", "kind": "weapon", "stackable": false, "weight": 3},
   iron_axe: {"name": "Железный топор", "kind": "weapon", "stackable": false, "weight": 11},
@@ -84,7 +89,7 @@ export function validateContent(economy, items = ITEMS, recipes = RECIPES) {
   const unique = list => new Set(list.map(x => x.id)).size === list.length && list.every(x => /^[a-z][a-z0-9_]*$/.test(x.id));
   if (!unique(economy.offers) || !unique(economy.contracts) || !unique(economy.modules) || !unique(economy.skills) || !unique(recipes)) fail();
   for (const [id, item] of Object.entries(items)) {
-    if (!/^[a-z][a-z0-9_]*$/.test(id) || !item.name || !['weapon', 'consumable', 'valuable', 'material'].includes(item.kind)
+    if (!/^[a-z][a-z0-9_]*$/.test(id) || !item.name || !['weapon', 'armor', 'ammo', 'consumable', 'valuable', 'material'].includes(item.kind)
       || typeof item.stackable !== 'boolean' || !Number.isFinite(item.weight) || item.weight < 0) fail();
   }
   for (const offer of economy.offers) {
