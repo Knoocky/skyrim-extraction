@@ -18,6 +18,7 @@ try{
   if(frame%90===1){
    const state=sim.host.snapshot();
    for(const a of state.combat.actors){
+    if(a.stamina<22000||a.action.kind!=='idle')continue; // Let exhausted actors recover in long runs.
     if(a.kind==='player'){
      const b=state.metadata.players[a.id];
      await measure(()=>sim.host.execute(b.playerId,{requestId:'input-'+frame+'-'+a.id,operation:'input',payload:{version:COMBAT_MANIFEST.version,rulesHash:COMBAT_MANIFEST.rulesHash,sequence:a.sequence+1,intent:'light'}}));
@@ -28,7 +29,7 @@ try{
   if(frame%90===13){
    const state=sim.host.snapshot(),players=state.combat.actors.filter(a=>a.kind==='player'),npcs=state.combat.actors.filter(a=>a.kind==='npc');
    const original=sim.host.port.observe;sim.host.port.observe=()=>({distance:1,inArc:true,facing:true,clear:false,safeZone:false});
-   try{for(const [i,a] of npcs.entries())await measure(()=>sim.host.contact('contact-'+frame+'-'+a.id,a.id,players[i%4].id,a.action.serial));}finally{sim.host.port.observe=original;}
+   try{for(const [i,a] of npcs.entries())if(a.action.kind==='light')await measure(()=>sim.host.contact('contact-'+frame+'-'+a.id,a.id,players[i%4].id,a.action.serial));}finally{sim.host.port.observe=original;}
   }
  }
  const elapsed=performance.now()-start,s=sim.host.snapshot();times.sort((a,b)=>a-b);

@@ -24,7 +24,7 @@ jobs:
       - run: npm run build
       - run: npm test
       - run: npm run qa:combat -- 100
-      - run: npm run qa:raid -- 600
+      - run: npm run qa:raid -- 900
       - run: npm run demo
       - run: npm run check:bindings -- config/bindings.example.json --template
       - name: Independent scenarios and bounded service soak
