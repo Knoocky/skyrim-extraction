@@ -9,12 +9,11 @@ const frames=Number(process.argv[2]??600);
 if(!Number.isInteger(frames)||frames<60||frames>36000)throw Error('usage: node scripts/qa-raid.mjs [60..36000 frames]');
 const dir=mkdtempSync(join(tmpdir(),'raid-qa-')),filename=join(dir,'core.sqlite');
 const sim=await createRaidSandbox(filename,join(dir,'projection.sqlite'),{players:4,npcs:28});
-const times=[];let writes=0;
-const measure=async(fn)=>{const start=performance.now();await fn();times.push(performance.now()-start);writes++;};
+const times=[];let writes=0,nextHeartbeat=performance.now()+5000;
+const measure=async(fn)=>{if(performance.now()>=nextHeartbeat){await sim.host.heartbeat();nextHeartbeat=performance.now()+5000;}const start=performance.now();await fn();times.push(performance.now()-start);writes++;};
 const start=performance.now();
 try{
  for(let frame=1;frame<=frames;frame++){
-  if(frame%120===1)await sim.host.heartbeat();
   await measure(()=>sim.host.advance(frame));
   if(frame%90===1){
    const state=sim.host.snapshot();

@@ -29,12 +29,18 @@ export async function createRaidSandbox(filename,projectionFilename,{players=1,n
  const state=()=>({ready:host.ready,snapshot:host.snapshot(),manifest:COMBAT_MANIFEST,items:ITEMS,events:events.slice(-30)});
  async function step(ticks){
   if(!Number.isInteger(ticks)||ticks<1||ticks>120)throw Error('INVALID_COMBAT_TICK');
-  for(let i=0;i<ticks;i++){
-   await host.advance(host.snapshot().combat.tick+1);
-   for(const a of host.snapshot().combat.actors){
-    if(!['light','heavy'].includes(a.action.kind)||a.hp===0)continue;
-    if(host.snapshot().combat.tick-a.action.start!==attackProfile(a.weapon,a.action.kind).windup)continue;
-    const target=host.snapshot().combat.actors.find(b=>b.team!==a.team&&b.hp>0);if(!target)continue;
+  const end=host.snapshot().combat.tick+ticks;let nextHeartbeat=performance.now()+5000;
+  while(host.snapshot().combat.tick<end){
+   if(performance.now()>=nextHeartbeat){await host.heartbeat();nextHeartbeat=performance.now()+5000;}
+   const current=host.snapshot().combat;
+   const contacts=current.actors.filter(a=>a.hp>0&&['light','heavy'].includes(a.action.kind)).map(a=>a.action.start+attackProfile(a.weapon,a.action.kind).windup).filter(t=>t>current.tick);
+   await host.advance(Math.min(end,...contacts));
+   for(const id of host.snapshot().combat.actors.map(a=>a.id)){
+    // Earlier contacts at this same tick can interrupt or kill a later attacker.
+    const latest=host.snapshot().combat,a=latest.actors.find(a=>a.id===id);
+    if(!a||!['light','heavy'].includes(a.action.kind)||a.hp===0)continue;
+    if(latest.tick-a.action.start!==attackProfile(a.weapon,a.action.kind).windup)continue;
+    const target=latest.actors.find(b=>b.team!==a.team&&b.hp>0);if(!target)continue;
     const hit=await host.contact('contact-'+a.id+'-'+a.action.serial+'-'+target.id,a.id,target.id,a.action.serial);
     if(hit.result)events.push(hit.result);if(events.length>30)events.shift();
    }
