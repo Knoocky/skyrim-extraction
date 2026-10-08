@@ -85,13 +85,16 @@ export class RaidCoordinator {
       }
       if(input.operation==='pickup'){
         keys(p,['containerId','itemId']);const container=id(p.containerId),item=id(p.itemId);
+        const replay=this.service.replayObservedIntent(this.worldId,requestId,'pickup',{playerId,containerId:container,itemId:item});if(replay!==undefined)return replay;
         check(this.port.canPickup?.(playerId,container,item)===true,'PICKUP_NOT_AUTHORIZED');
         return this.service.pickup(this.worldId,playerId,requestId,container,item);
       }
       if(input.operation==='extract'){
-        keys(p,['exitId']);const sample=this.port.extraction?.(playerId);check(sample&&this.policy,'EXTRACTION_OBSERVATION_REQUIRED');
+        keys(p,['exitId']);const exitId=id(p.exitId);
+        const replay=this.service.replayObservedIntent(this.worldId,requestId,'extract',{playerId,exitId});if(replay!==undefined)return replay;
+        const sample=this.port.extraction?.(playerId);check(sample&&this.policy,'EXTRACTION_OBSERVATION_REQUIRED');
         check(sample.connectionId===connectionId,'STALE_CONNECTION');
-        return this.service.extract(this.worldId,playerId,requestId,id(p.exitId),this.policy,sample);
+        return this.service.extract(this.worldId,playerId,requestId,exitId,this.policy,sample);
       }
       check(false,'UNKNOWN_RAID_INTENT');
     });
@@ -101,10 +104,9 @@ export class RaidCoordinator {
   connection(requestId:string,playerId:string,connected:boolean){return this.run(()=>this.service.connection(this.worldId,playerId,requestId,connected));}
   spawn(requestId:string,npc:FighterSpec,target?:string){return this.run(()=>this.service.spawn(this.worldId,requestId,npc,target));}
   retire(requestId:string,actorId:string){return this.run(()=>this.service.retire(this.worldId,requestId,actorId));}
-  contact(requestId:string,attackerId:string,targetId:string,serial:number){return this.run(()=>{
-    const tick=this.snapshot().combat.tick,observed=this.port.observe(attackerId,targetId,serial,tick);check(observed,'COMBAT_OBSERVATION_REQUIRED');
-    return this.service.contact(this.worldId,requestId,{...observed,attackerId,targetId,serial,tick});
-  });}
+  contact(requestId:string,attackerId:string,targetId:string,serial:number){return this.run(()=>
+    this.service.observeContact(this.worldId,requestId,{attackerId,targetId,serial},tick=>this.port.observe(attackerId,targetId,serial,tick))
+  );}
   observeExtraction(transportId:string,exitId:string){return this.guard(()=>{
     check(this.ready,'RAID_NOT_READY');const connection=this.port.session(transportId);check(connection,'COMBAT_LOGIN_REQUIRED');
     return this.service.core.executeConnected(connection,(player:unknown)=>{

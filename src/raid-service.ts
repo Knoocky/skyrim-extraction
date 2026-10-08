@@ -41,6 +41,15 @@ export class RaidService {
    return this.snapshot(worldId);
   });
  }
+ /** Trusted adapter replay lookup. Call only after validating the current session
+  * and exact intent envelope; a receipt never grants authority to a new command. */
+ replayObservedIntent(world:string,requestId:string,operation:'pickup'|'extract',payload:unknown){
+  check(typeof requestId==='string'&&requestId.length>0&&requestId.length<=200,'INVALID_REQUEST_ID');
+  const previous=this.core.row('SELECT payload,result FROM raid_receipts WHERE world_id=? AND request_id=?',world,requestId);
+  if(!previous)return undefined;
+  check(previous.payload===canonical({operation,payload}),'REQUEST_ID_REUSED');
+  return JSON.parse(String(previous.result));
+ }
  private mutate(world:string,requestId:string,operation:string,payload:unknown,work:(s:RaidSnapshot)=>unknown,receipt=true,allowPending=false){
   check(typeof requestId==='string'&&requestId.length>0&&requestId.length<=200,'INVALID_REQUEST_ID');
   const fingerprint=canonical({operation,payload});
@@ -88,6 +97,22 @@ export class RaidService {
  advance(world:string,tick:number){
   const current=this.snapshot(world);if(tick===current.combat.tick)return {revision:current.revision,result:{tick}};
   return this.mutate(world,'tick-'+tick,'advance',{tick},s=>{s.combat=advanceCombat(s.combat,tick);return {tick};},false);
+ }
+ /** Replay a trusted contact by its stable request identity, before sampling new geometry.
+  * The original full observation remains persisted by contact(); new requests still
+  * require the authoritative port and cannot supply their own tick or physics. */
+ observeContact(world:string,requestId:string,identity:Pick<Contact,'attackerId'|'targetId'|'serial'>,observe:(tick:number)=>Omit<Contact,'attackerId'|'targetId'|'serial'|'tick'>|null){
+  return this.core.transaction(()=>{
+   check(typeof requestId==='string'&&requestId.length>0&&requestId.length<=200,'INVALID_REQUEST_ID');
+   const previous=this.core.row('SELECT payload,result FROM raid_receipts WHERE world_id=? AND request_id=?',world,requestId);
+   if(previous){
+    const original=JSON.parse(String(previous.payload));
+    check(original.operation==='contact'&&canonical({attackerId:original.payload.attackerId,targetId:original.payload.targetId,serial:original.payload.serial})===canonical(identity),'REQUEST_ID_REUSED');
+    return JSON.parse(String(previous.result));
+   }
+   const tick=this.snapshot(world).combat.tick,observed=observe(tick);check(observed,'COMBAT_OBSERVATION_REQUIRED');
+   return this.contact(world,requestId,{...observed,...identity,tick});
+  });
  }
  contact(world:string,requestId:string,observation:Contact){return this.mutate(world,requestId,'contact',observation,s=>{
   const r=contactCombat(s.combat,observation);s.combat=r.state;const e=r.event;
