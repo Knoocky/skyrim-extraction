@@ -102,3 +102,54 @@ test('death and kill objective progress commit once; extraction damage resets ho
  assert.equal(result.result.exitId,exitId);assert.equal(f.core.snapshot('player0').active,null);assert.equal(f.host.snapshot().combat.actors.some(a=>a.kind==='player'),false);assert.equal(f.core.row('SELECT count FROM mission_progress').count,1);
  assert.deepEqual(f.service.extract(f.world,'player0','extract',exitId,policy,sample()),result);
 });
+
+test('committed contact retries preserve their original observation after ticks and geometry change',async t=>{
+ const f=setup(t);await f.host.start();await f.host.npc('attack','enemy0',1,'light');await f.host.advance(12);
+ const target=f.bindings[0].expeditionId,receipt=await f.host.contact('contact-replay','enemy0',target,1),hp=f.actor().hp;
+ await f.host.advance(100);const revision=f.host.snapshot().revision;let observations=0;
+ f.port.observe=()=>{observations++;return {distance:99,inArc:false,facing:false,clear:false,safeZone:true};};
+ assert.deepEqual(await f.host.contact('contact-replay','enemy0',target,1),receipt);
+ f.port.observe=()=>{observations++;return null;};
+ assert.deepEqual(await f.host.contact('contact-replay','enemy0',target,1),receipt);
+ assert.equal(observations,0);assert.equal(f.actor().hp,hp);assert.equal(f.host.snapshot().revision,revision);
+ for(const [attacker,targetId,serial] of [['other',target,1],['enemy0','other',1],['enemy0',target,2]]){
+  await assert.rejects(f.host.contact('contact-replay',attacker,targetId,serial),/REQUEST_ID_REUSED/);await f.host.retry();
+ }
+ assert.equal(observations,0);
+ await assert.rejects(f.host.contact('attack','enemy0',target,1),/REQUEST_ID_REUSED/);await f.host.retry();
+ await assert.rejects(f.host.contact('fresh-contact','enemy0',target,1),/COMBAT_OBSERVATION_REQUIRED/);
+});
+
+test('pickup receipt remains replayable after the item is no longer in reach',async t=>{
+ const f=setup(t),itemId=f.item('healing_potion').id;
+ const containerId=String(f.core.row("SELECT id FROM locations WHERE kind='CONTAINER' AND raid_id=?",f.world).id);
+ f.core.run('UPDATE items SET location_id=? WHERE id=?',containerId,itemId);
+ await f.host.start();const command={requestId:'pickup-replay',operation:'pickup',payload:{containerId,itemId}};
+ const receipt=await f.host.execute('player0',command),revision=f.host.snapshot().revision;f.port.canPickup=()=>false;
+ assert.deepEqual(await f.host.execute('player0',command),receipt);assert.equal(f.host.snapshot().revision,revision);
+ for(const payload of [{containerId:'different',itemId},{containerId,itemId:'different'}]){
+  await assert.rejects(f.host.execute('player0',{...command,payload}),/REQUEST_ID_REUSED/);await f.host.retry();
+ }
+ f.core.registerPlayer('register-other','other');f.connections.other=f.core.openConnection('connect-other','other').connectionId;
+ await assert.rejects(f.host.execute('other',command),/REQUEST_ID_REUSED/);await f.host.retry();
+ await assert.rejects(f.host.execute('intruder',command),/COMBAT_LOGIN_REQUIRED/);await f.host.retry();
+ await assert.rejects(f.host.execute('player0',{...command,requestId:'fresh-pickup'}),/PICKUP_NOT_AUTHORIZED/);await f.host.retry();
+ f.core.closeConnection('close-player',f.connections.player0);
+ await assert.rejects(f.host.execute('player0',command),/STALE_CONNECTION/);
+});
+
+test('extraction receipt remains replayable after its actor leaves the world',async t=>{
+ const f=setup(t);let clock=0;const exitId=REGION.exits.find(e=>!e.requires).id;
+ const policy=new ExtractionPolicy([{id:exitId,worldId:f.world,cellId:'test',x:0,y:0,z:0,radius:5,holdMs:2000,availability:'always'}],()=>clock);
+ f.port.extraction=()=>({playerId:'player0',worldId:f.world,expeditionId:f.bindings[0].expeditionId,connectionId:f.connections.player0,cellId:'test',x:0,y:0,z:0,alive:true,connected:true,inCombat:false,observedAt:clock,hour:12,damageSequence:0});
+ const host=new RaidCoordinator(f.service,f.gateway,f.lease,f.world,f.port,policy);await host.start();
+ host.observeExtraction('player0',exitId);clock=1000;host.observeExtraction('player0',exitId);clock=2000;
+ const command={requestId:'extract-replay',operation:'extract',payload:{exitId}},receipt=await host.execute('player0',command);
+ const revision=host.snapshot().revision,stash=f.core.snapshot('player0').stash;
+ f.port.extraction=()=>null;assert.deepEqual(await host.execute('player0',command),receipt);
+ assert.equal(host.snapshot().revision,revision);assert.deepEqual(f.core.snapshot('player0').stash,stash);
+ await assert.rejects(host.execute('player0',{...command,payload:{exitId:'different'}}),/REQUEST_ID_REUSED/);await host.retry();
+ await assert.rejects(host.execute('player0',{...command,requestId:'fresh-extract'}),/EXTRACTION_OBSERVATION_REQUIRED/);await host.retry();
+ f.core.closeConnection('close-player',f.connections.player0);
+ await assert.rejects(host.execute('player0',command),/STALE_CONNECTION/);
+});
